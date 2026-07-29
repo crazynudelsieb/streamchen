@@ -1,0 +1,59 @@
+name: CI
+
+# Every push and pull request. The release workflow runs the same checks
+# itself before it builds, so an image can never be published from a tree that
+# does not lint and pass its tests.
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_call: # reused by build-multiarch.yml as its gate
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          # Matches the interpreter in both Dockerfiles. Unlike a library, this
+          # app ships on exactly one runtime, so the checks run on that one.
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check .
+
+      # No services: the suite runs on SQLite and fakeredis.
+      - name: Test
+        run: pytest -q
+
+  compose:
+    name: Compose files parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Catches a typo in the deployment before someone finds it on a server.
+      - name: Validate docker-compose.yml
+        run: docker compose -f docker-compose.yml config --quiet
+        env:
+          PUBLIC_HOST: streamchen.example.com
+          BASE_URL: https://streamchen.example.com
+          ICECAST_PUBLIC_URL: https://streamchen.example.com/stream
+          POSTGRES_DB: streamchen
+          POSTGRES_USER: streamchen
+          POSTGRES_PASSWORD: ci
+          ICECAST_SOURCE_PASSWORD: ci
+          ICECAST_ADMIN_PASSWORD: ci
+
+      - name: Validate docker-compose.local.yml
+        run: docker compose -f docker-compose.local.yml config --quiet

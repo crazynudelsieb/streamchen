@@ -1,0 +1,11 @@
+{% for track in history %}
+<div class="list-row">
+    <div class="queue-body">
+        <div class="queue-title" title="{{ track.title }}">{{ track.title }}</div>
+        <div class="queue-meta">
+            {{ track.duration_s | duration }} · {{ track.added_by }}
+            {% if track.started_at %} · {{ track.started_at | ago }}{% endif %}
+        </div>
+    </div>
+</div>
+{% endfor %}

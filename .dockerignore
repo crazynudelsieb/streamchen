@@ -1,0 +1,33 @@
+# Keep the build context small and free of anything that should not ship.
+
+.git
+.github
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Tests and dev tooling are not part of the runtime images.
+tests
+pytest.ini
+ruff.toml
+requirements-dev.txt
+
+# Local configuration and docs
+.env
+.env.*
+!.env.example
+*.md
+docker-compose*.yml
+.vscode
+.idea
+
+# Never, under any circumstances, into an image.
+audio-cache
+*.webm
+*.m4a
+*.opus

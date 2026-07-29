@@ -1,0 +1,223 @@
+name: Build Multi-Arch Images
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: "Auto-increment the next version from the latest v* git tag, and push that tag on success"
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - none
+      version:
+        description: "Explicit image tag (for example v1.2.3). Overrides version_bump. If both are empty, only latest is used."
+        required: false
+        type: string
+      push_latest:
+        description: "Also push :latest"
+        required: true
+        default: true
+        type: boolean
+      no_cache:
+        description: "Build with --no-cache"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  # Three images from one repository: the app (pages + API), the playback
+  # worker, and the Icecast server configured for it.
+  APP_IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/streamchen
+  WORKER_IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/streamchen-worker
+  ICECAST_IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/streamchen-icecast
+
+jobs:
+  # Nothing is published from a tree that doesn't lint and pass its tests.
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Full history + tags so the version bump can find the latest v* tag.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          # Prefer PAT with write:packages to avoid package-scoped 403s on blob HEAD checks.
+          # Fallback to GITHUB_TOKEN for repositories where package permissions are inherited.
+          password: ${{ secrets.GHCR_TOKEN != '' && secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Resolve build tags
+        id: vars
+        shell: bash
+        # Pass inputs via env instead of interpolating ${{ }} into the script
+        # body, so input values can never be executed as shell code.
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_VERSION_BUMP: ${{ inputs.version_bump }}
+          # Base used when the repo has no v* tags yet.
+          SEED_VERSION: v0.1.0
+        run: |
+          set -euo pipefail
+
+          VERSION_TAG=""
+          CREATE_TAG="false"
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION_TAG="${GITHUB_REF_NAME}"
+          elif [[ -n "${INPUT_VERSION}" ]]; then
+            VERSION_TAG="${INPUT_VERSION}"
+          elif [[ -n "${INPUT_VERSION_BUMP:-}" && "${INPUT_VERSION_BUMP}" != "none" ]]; then
+            # Highest plain vMAJOR.MINOR.PATCH tag; pre-release tags are ignored.
+            LATEST="$(git tag --list 'v*' --sort=-v:refname \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
+
+            if [[ -z "${LATEST}" ]]; then
+              LATEST="${SEED_VERSION}"
+              echo "No vMAJOR.MINOR.PATCH tags found; seeding from ${LATEST}"
+            fi
+
+            if [[ ! "${LATEST}" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              echo "Cannot parse '${LATEST}' as a version; aborting." >&2
+              exit 1
+            fi
+            MAJOR="${BASH_REMATCH[1]}"
+            MINOR="${BASH_REMATCH[2]}"
+            PATCH="${BASH_REMATCH[3]}"
+
+            case "${INPUT_VERSION_BUMP}" in
+              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+              patch) PATCH=$((PATCH + 1)) ;;
+              *) echo "Unknown version_bump '${INPUT_VERSION_BUMP}'" >&2; exit 1 ;;
+            esac
+
+            VERSION_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+            CREATE_TAG="true"
+            echo "Auto-bump (${INPUT_VERSION_BUMP}): ${LATEST} -> ${VERSION_TAG}"
+
+            if git rev-parse -q --verify "refs/tags/${VERSION_TAG}" >/dev/null; then
+              echo "Tag ${VERSION_TAG} already exists; aborting." >&2
+              exit 1
+            fi
+          fi
+
+          echo "version_tag=${VERSION_TAG}" >> "$GITHUB_OUTPUT"
+          echo "create_tag=${CREATE_TAG}" >> "$GITHUB_OUTPUT"
+
+      # app.__version__ is the single source of truth for the running version,
+      # so it has to be the tag being published -- otherwise a bug report names
+      # a version that was never released. Stamped into the tree that gets
+      # built, and committed alongside the tag below so the repo doesn't drift.
+      - name: Stamp version
+        if: steps.vars.outputs.version_tag != ''
+        shell: bash
+        env:
+          VERSION_TAG: ${{ steps.vars.outputs.version_tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${VERSION_TAG#v}"
+          INIT="app/__init__.py"
+          sed -i -E "s/^__version__ = \".*\"$/__version__ = \"${VERSION}\"/" "${INIT}"
+          grep -q "^__version__ = \"${VERSION}\"$" "${INIT}"
+          echo "Stamped ${INIT} as ${VERSION}"
+
+      - name: Build and push linux/amd64 + linux/arm64 images
+        shell: bash
+        env:
+          VERSION_TAG: ${{ steps.vars.outputs.version_tag }}
+          INPUT_PUSH_LATEST: ${{ inputs.push_latest }}
+          INPUT_NO_CACHE: ${{ inputs.no_cache }}
+        run: |
+          set -euo pipefail
+
+          PUSH_LATEST="true"
+          NO_CACHE="true"
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            PUSH_LATEST="${INPUT_PUSH_LATEST}"
+            NO_CACHE="${INPUT_NO_CACHE}"
+          fi
+
+          if [[ "${PUSH_LATEST}" != "true" && -z "${VERSION_TAG}" ]]; then
+            echo "No tags selected; aborting build."
+            exit 1
+          fi
+
+          build_image() {
+            local image_name="$1"
+            local dockerfile="$2"
+            local context="$3"
+            local cmd=(docker buildx build --platform linux/amd64,linux/arm64)
+
+            if [[ "${NO_CACHE}" == "true" ]]; then
+              cmd+=(--no-cache)
+            fi
+
+            if [[ "${PUSH_LATEST}" == "true" ]]; then
+              cmd+=( -t "${image_name}:latest" )
+            fi
+
+            if [[ -n "${VERSION_TAG}" ]]; then
+              cmd+=( -t "${image_name}:${VERSION_TAG}" )
+            fi
+
+            cmd+=( -f "${dockerfile}" --push "${context}" )
+
+            echo "Building image ${image_name} for linux/amd64,linux/arm64"
+            echo "Dockerfile: ${dockerfile} (context ${context})"
+            "${cmd[@]}"
+          }
+
+          build_image "${APP_IMAGE_NAME}"     "Dockerfile"                 "."
+          build_image "${WORKER_IMAGE_NAME}"  "Dockerfile.worker"          "."
+          build_image "${ICECAST_IMAGE_NAME}" "docker/icecast/Dockerfile"  "docker/icecast"
+
+      # Only runs for auto-bumped dispatch builds. Tags pushed with GITHUB_TOKEN
+      # do not trigger workflows, so this cannot re-enter the v* push trigger.
+      - name: Push version tag
+        if: steps.vars.outputs.create_tag == 'true'
+        shell: bash
+        env:
+          VERSION_TAG: ${{ steps.vars.outputs.version_tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Carry the stamped version into the tag (and onto the branch), so
+          # the released commit is the one that declares the released version.
+          git add app/__init__.py
+          if ! git diff --cached --quiet; then
+            git commit -m "release: ${VERSION_TAG}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+          git tag -a "${VERSION_TAG}" -m "Release ${VERSION_TAG}"
+          git push origin "refs/tags/${VERSION_TAG}"
+          echo "Pushed tag ${VERSION_TAG} at $(git rev-parse HEAD)"

@@ -1,0 +1,63 @@
+{# Swapped whenever the queue changes. Buttons carry their data in attributes
+   so app.js can act on them with one delegated listener. #}
+{% if not queue %}
+<div class="text-center text-muted py-4">
+    <i class="bi bi-music-note-list d-block mb-2" style="font-size: 2rem"></i>
+    Nothing queued. Paste a link above and the radio starts.
+</div>
+{% else %}
+{% for track in queue %}
+<div class="queue-row" data-track="{{ track.id }}">
+    <div class="queue-position">{{ loop.index }}</div>
+
+    {% if track.thumbnail_url %}
+    <img class="queue-art" src="{{ track.thumbnail_url }}" alt="" loading="lazy">
+    {% else %}
+    <div class="queue-art"></div>
+    {% endif %}
+
+    <div class="queue-body">
+        <div class="queue-title" title="{{ track.title }}">{{ track.title }}</div>
+        <div class="queue-meta">
+            {{ track.duration_s | duration }} · {{ track.added_by }}
+            {% if track.mine %}<span class="badge-soft badge-mine ms-2">you</span>{% endif %}
+            {% if track.shadowed %}<span class="badge-soft ms-2">pending review</span>{% endif %}
+        </div>
+    </div>
+
+    <div class="queue-actions">
+        {% if voting_enabled %}
+        <button type="button" class="vote-btn up {{ 'active' if track.my_vote > 0 }}"
+                data-action="vote" data-value="1" data-track="{{ track.id }}"
+                aria-pressed="{{ 'true' if track.my_vote > 0 else 'false' }}"
+                aria-label="Upvote {{ track.title }}">
+            <i class="bi bi-hand-thumbs-up"></i>
+        </button>
+        <span class="vote-score" title="{{ track.upvotes }} up · {{ track.downvotes }} down">
+            {{ track.score | score }}
+        </span>
+        <button type="button" class="vote-btn down {{ 'active' if track.my_vote < 0 }}"
+                data-action="vote" data-value="-1" data-track="{{ track.id }}"
+                aria-pressed="{{ 'true' if track.my_vote < 0 else 'false' }}"
+                aria-label="Downvote {{ track.title }}">
+            <i class="bi bi-hand-thumbs-down"></i>
+        </button>
+        {% endif %}
+
+        {% if is_host and not loop.first %}
+        <button type="button" class="vote-btn" data-action="promote" data-track="{{ track.id }}"
+                title="Play next" aria-label="Play {{ track.title }} next">
+            <i class="bi bi-arrow-bar-up"></i>
+        </button>
+        {% endif %}
+
+        {% if is_host or track.mine %}
+        <button type="button" class="vote-btn" data-action="remove" data-track="{{ track.id }}"
+                title="Remove" aria-label="Remove {{ track.title }}">
+            <i class="bi bi-x-lg"></i>
+        </button>
+        {% endif %}
+    </div>
+</div>
+{% endfor %}
+{% endif %}

@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+
+{% block title %}Privacy — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<div class="container py-5">
+    <div class="legal mx-auto">
+        <h1>Privacy</h1>
+        <p class="lead">
+            {{ APP_NAME }} has no accounts, so there is very little about you to hold. This page
+            is the whole of it.
+        </p>
+
+        <h2>What is stored</h2>
+        <div class="card">
+            <div class="card-body">
+                <ul class="privacy-list">
+                    <li>
+                        <i class="bi bi-check-circle-fill yes"></i>
+                        <span><strong>A random session id</strong> in a cookie. It is how a room
+                        knows two requests came from the same person. It is not linked to an
+                        identity.</span>
+                    </li>
+                    <li>
+                        <i class="bi bi-check-circle-fill yes"></i>
+                        <span><strong>The songs you queue and the votes you cast</strong>, attached
+                        to that session id and to the room you are in.</span>
+                    </li>
+                    <li>
+                        <i class="bi bi-check-circle-fill yes"></i>
+                        <span><strong>A generated nickname</strong> so the queue is readable. You
+                        are never asked for a real one.</span>
+                    </li>
+                    <li>
+                        <i class="bi bi-x-circle-fill"></i>
+                        <span><strong>No email address, no password, no profile.</strong> There is
+                        nothing to sign up for.</span>
+                    </li>
+                    <li>
+                        <i class="bi bi-x-circle-fill"></i>
+                        <span><strong>No analytics, no advertising, no third-party trackers.</strong>
+                        Every asset on this page is served from this server.</span>
+                    </li>
+                    <li>
+                        <i class="bi bi-x-circle-fill"></i>
+                        <span><strong>No audio files.</strong> Media is streamed through and deleted
+                        the moment a track finishes — nothing is retained after playback.</span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <h2>How long it is kept</h2>
+        <div class="card">
+            <div class="card-body">
+                <ul class="privacy-list">
+                    <li>
+                        <i class="bi bi-hourglass-split keep"></i>
+                        <span>Rooms and everything in them are deleted once nobody has used them
+                        for {{ room_idle_days }} days. A host can delete a room immediately at any
+                        time.</span>
+                    </li>
+                    <li>
+                        <i class="bi bi-hourglass-split keep"></i>
+                        <span>Temporary caches (track titles, stream addresses, presence) expire on
+                        their own within hours and can be cleared at any moment without losing
+                        anything.</span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <h2>Your host key</h2>
+        <div class="card">
+            <div class="card-body">
+                <p class="mb-0 text-muted">
+                    When you create a room you receive a host key. The server keeps only a hash of
+                    it, so it cannot be recovered or handed to anyone else — including you. Host
+                    rights otherwise ride on your session cookie; clearing site data means giving
+                    them up unless you kept the key.
+                </p>
+            </div>
+        </div>
+
+        {% if data_location %}
+        <h2>Where it is stored</h2>
+        <div class="card">
+            <div class="card-body">
+                <dl>
+                    <dt>Data location</dt>
+                    <dd>{{ data_location }}</dd>
+                </dl>
+            </div>
+        </div>
+        {% endif %}
+
+        <h2>Third parties</h2>
+        <div class="card">
+            <div class="card-body">
+                <p class="mb-0 text-muted">
+                    When a song is played, this server fetches it from YouTube. {{ APP_NAME }} is
+                    not affiliated with YouTube, and your browser never contacts it — only the
+                    server does.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

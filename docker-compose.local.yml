@@ -1,0 +1,80 @@
+# Local stack: builds from this tree and publishes ports directly, so there is
+# no reverse proxy or TLS to arrange.
+#
+#   cp .env.example .env
+#   docker compose -f docker-compose.local.yml up --build
+#   open http://localhost:8080
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8000"
+    environment:
+      - DATABASE_URL=postgresql://streamchen:streamchen@db:5432/streamchen
+      - REDIS_URL=redis://redis:6379/0
+      - BASE_URL=http://localhost:8080
+      # Icecast is published directly here; in production Traefik puts it
+      # behind /stream on the same host.
+      - ICECAST_PUBLIC_URL=http://localhost:8000
+      - LOG_LEVEL=DEBUG
+      - SECURE_COOKIES=false
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      - DATABASE_URL=postgresql://streamchen:streamchen@db:5432/streamchen
+      - REDIS_URL=redis://redis:6379/0
+      - BASE_URL=http://localhost:8080
+      - ICECAST_HOST=icecast
+      - ICECAST_SOURCE_PASSWORD=hackme
+      - LOG_LEVEL=DEBUG
+    tmpfs:
+      - /var/cache/streamchen:size=1200m,mode=0700
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      icecast:
+        condition: service_started
+    restart: unless-stopped
+
+  icecast:
+    build:
+      context: ./docker/icecast
+    environment:
+      - ICECAST_SOURCE_PASSWORD=hackme
+      - ICECAST_ADMIN_PASSWORD=hackme
+      - ICECAST_HOSTNAME=localhost
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      - POSTGRES_DB=streamchen
+      - POSTGRES_USER=streamchen
+      - POSTGRES_PASSWORD=streamchen
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U streamchen"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: unless-stopped

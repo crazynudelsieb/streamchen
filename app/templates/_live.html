@@ -1,0 +1,12 @@
+{# One response, three regions. app.js pulls this on every realtime event and
+   swaps each part into place, so the player, the queue and the history are
+   always from the same snapshot. #}
+<div data-region="nowplaying">{% include "_nowplaying.html" %}</div>
+<div data-region="queue">{% include "_queue.html" %}</div>
+<div data-region="history">{% include "_history.html" %}</div>
+<div data-region="meta"
+     data-listeners="{{ listeners }}"
+     data-queue-count="{{ queue|length }}"
+     data-has-history="{{ '1' if history else '0' }}"
+     data-add-disabled="{{ '1' if add_disabled_reason else '0' }}"
+     data-add-reason="{{ add_disabled_reason }}"></div>

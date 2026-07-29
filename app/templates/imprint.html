@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block title %}Impressum — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<div class="container py-5">
+    <div class="legal mx-auto">
+        <h1>Impressum</h1>
+        <div class="card">
+            <div class="card-body">
+                <dl>
+                    <dt>Operator</dt>
+                    <dd>{{ imprint.name }}</dd>
+
+                    {% if imprint.address %}
+                    <dt>Address</dt>
+                    <dd>{{ imprint.address }}</dd>
+                    {% endif %}
+
+                    {% if imprint.email %}
+                    <dt>Email</dt>
+                    <dd>
+                        <a class="js-mail" data-user="{{ imprint.email[0] }}"
+                           data-domain="{{ imprint.email[1] }}" rel="nofollow">
+                            <span class="mail-text">{{ imprint.email[0] }}<span aria-hidden="true"> [at] </span>{{ imprint.email[1] }}</span>
+                        </a>
+                    </dd>
+                    {% endif %}
+
+                    {% if imprint.phone %}
+                    <dt>Phone</dt>
+                    <dd>{{ imprint.phone }}</dd>
+                    {% endif %}
+
+                    {% if imprint.vat %}
+                    <dt>VAT ID</dt>
+                    <dd>{{ imprint.vat }}</dd>
+                    {% endif %}
+
+                    {% if imprint.extra %}
+                    <dt>Further information</dt>
+                    <dd>{{ imprint.extra }}</dd>
+                    {% endif %}
+                </dl>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

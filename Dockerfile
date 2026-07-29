@@ -1,0 +1,62 @@
+# Multi-stage production Dockerfile for the streamchen API.
+
+# Build stage - includes build tools and dependencies
+FROM python:3.14.5-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpq-dev \
+    libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements.txt .
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Production stage - minimal runtime image
+FROM python:3.14.5-slim AS production
+
+LABEL org.opencontainers.image.title="streamchen"
+LABEL org.opencontainers.image.description="Collaborative radio — one room, one stream, everybody's queue"
+LABEL org.opencontainers.image.url="https://github.com/crazynudelsieb/streamchen"
+LABEL org.opencontainers.image.source="https://github.com/crazynudelsieb/streamchen"
+LABEL org.opencontainers.image.documentation="https://github.com/crazynudelsieb/streamchen/blob/main/README.md"
+LABEL org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH"
+
+RUN apt-get update && apt-get install -y \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+RUN groupadd -r streamchen && useradd -r -g streamchen streamchen
+
+COPY --from=builder /opt/venv /opt/venv
+
+WORKDIR /app
+COPY app ./app
+
+RUN chown -R streamchen:streamchen /app
+USER streamchen
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8000/api/healthz || exit 1
+
+# One worker process, several event-loop workers inside it. WebSocket rooms are
+# fanned out through Redis pub/sub, so scaling out is a matter of running more
+# containers rather than more processes here.
+CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
