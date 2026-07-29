@@ -2,7 +2,7 @@
 
 # --- API ---
 fastapi>=0.141.0,<1.0
-uvicorn[standard]>=0.34,<1.0
+uvicorn[standard]>=0.52.0,<1.0
 pydantic>=2.13.4,<3.0
 
 # --- Storage ---
