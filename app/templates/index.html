@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+    <div class="container text-center">
+        <h1 class="hero-title">
+            Everyone’s radio.<br>
+            <span class="accent">One link.</span>
+        </h1>
+        <p class="hero-subtitle">
+            {{ APP_NAME }} turns a shared link into a live station. Everyone hears the same
+            stream at the same moment, everyone adds songs, and the room votes on what plays
+            next.
+        </p>
+
+        <form class="mx-auto" style="max-width: 520px" id="createRoomForm">
+            <div class="input-group input-group-lg">
+                <input class="form-control" name="name" maxlength="80"
+                       placeholder="Name your room (optional)" aria-label="Room name">
+                <button class="btn btn-primary" type="submit">
+                    <i class="bi bi-broadcast me-1"></i>Start
+                </button>
+            </div>
+            <div class="form-text text-muted mt-2">
+                No account, no email. You get a link to share and a host key you can keep.
+            </div>
+        </form>
+    </div>
+</section>
+
+{# Rendered by app.js from localStorage: the server has no idea which rooms
+   this browser has been in, and should not. #}
+<section class="container mb-5">
+    <div class="card mx-auto d-none" style="max-width: 720px" id="recentRooms">
+        <div class="card-header"><i class="bi bi-clock-history me-2"></i>Rooms you visited</div>
+        <div class="card-body" id="recentRoomsBody"></div>
+    </div>
+</section>
+
+<section class="container pb-5">
+    <div class="row g-4">
+        {% for feature in features %}
+        <div class="col-12 col-sm-6 col-lg-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="feature-icon"><i class="bi {{ feature.icon }}"></i></div>
+                    <h2 class="h6 fw-bold">{{ feature.title }}</h2>
+                    <p class="text-muted mb-0 small">{{ feature.body }}</p>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}

@@ -1,0 +1,29 @@
+# Lint configuration.
+#
+# streamchen is not a packaged distribution -- dependencies live in
+# requirements*.txt and pytest is configured in pytest.ini -- so ruff is
+# configured standalone here rather than under [tool.ruff] in a pyproject.
+
+line-length = 100
+# The interpreter in the Dockerfiles. Both images ship the same runtime, so
+# the lint should not suggest rewrites they cannot execute.
+target-version = "py314"
+extend-exclude = ["frontend"]
+
+[lint]
+# Ruff's defaults (E4/E7/E9/F) plus:
+#   I   import sorting -- one obvious order, no debates in review
+#   UP  pyupgrade      -- the codebase targets 3.14, keep it idiomatic
+#   B   bugbear        -- catches the mutable-default / zip-without-strict class
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+
+[lint.isort]
+known-first-party = ["app", "tests"]
+
+[lint.flake8-bugbear]
+# `param: T = Depends(...)` is FastAPI's declaration syntax, not a mutable
+# default -- B008 would otherwise fire on every route in the app.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path", "fastapi.Body"]
+
+[format]
+quote-style = "double"

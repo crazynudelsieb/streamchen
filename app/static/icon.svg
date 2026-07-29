@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="streamchen">
+  <rect width="64" height="64" rx="14" fill="#111827"/>
+  <g fill="none" stroke="#16a34a" stroke-width="4" stroke-linecap="round">
+    <path d="M14 32v-2a18 18 0 0 1 36 0v2"/>
+    <path d="M16 34v10"/>
+    <path d="M48 34v10"/>
+  </g>
+  <g fill="#16a34a">
+    <rect x="24" y="28" width="4" height="12" rx="2"/>
+    <rect x="30" y="22" width="4" height="24" rx="2"/>
+    <rect x="36" y="30" width="4" height="8" rx="2"/>
+  </g>
+</svg>

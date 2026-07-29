@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+
+{% block title %}{{ room.name }} — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<div class="container py-4" id="room" data-token="{{ room.token }}"
+     data-stream="{{ stream_url }}" data-host="{{ '1' if is_host else '0' }}"
+     data-locked="{{ '1' if room.queue_locked else '0' }}"
+     data-voting="{{ '1' if room.voting_enabled else '0' }}">
+    <div class="row g-4">
+        <div class="col-12 col-lg-7">
+            <div class="d-flex align-items-center justify-content-between mb-3">
+                <div style="min-width: 0">
+                    <h1 class="h3 fw-bold mb-1">{{ room.name }}</h1>
+                    <div class="text-muted small">
+                        <span id="listenerCount">{{ listeners }}</span>
+                        listener{{ '' if listeners == 1 else 's' }} ·
+                        you are {{ me.display_name }}
+                        {% if is_host %}<span class="badge-soft badge-mine ms-2">host</span>{% endif %}
+                    </div>
+                </div>
+            </div>
+
+            {# The audio element and its transport live outside the swapped
+               region: re-rendering them would tear down playback. #}
+            <div class="card mb-3">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <span class="live-badge">
+                            <span class="live-dot off" id="liveDot"></span>
+                            <span id="liveLabel">Paused</span>
+                        </span>
+                        <span class="text-muted small">
+                            <i class="bi bi-people me-1"></i><span id="listenerCount2">{{ listeners }}</span>
+                        </span>
+                    </div>
+
+                    <div class="player">
+                        <button type="button" class="btn btn-primary player-play" id="playButton"
+                                aria-label="Start listening">
+                            <i class="bi bi-play-fill" id="playIcon"></i>
+                        </button>
+                        <div id="nowPlaying" class="flex-grow-1 d-flex align-items-center gap-3"
+                             style="min-width: 0">
+                            {% include "_nowplaying.html" %}
+                        </div>
+                    </div>
+
+                    <div class="d-flex align-items-center gap-2 mt-3">
+                        <i class="bi bi-volume-down text-muted"></i>
+                        <input class="volume-slider" type="range" min="0" max="1" step="0.01"
+                               value="0.8" id="volume" aria-label="Volume">
+                        <i class="bi bi-volume-up text-muted"></i>
+                    </div>
+
+                    <div class="alert alert-warning mt-3 mb-0 py-2 small d-none" id="playbackHint">
+                        The stream did not start. If the queue is empty the radio has nothing to
+                        broadcast yet — add a song and press play again.
+                    </div>
+
+                    <audio id="audio" preload="none"></audio>
+                </div>
+            </div>
+
+            <div class="card mb-3">
+                <div class="card-body">
+                    <h2 class="h6 text-muted text-uppercase small mb-2">Share this room</h2>
+                    <div class="input-group">
+                        <input class="form-control share-input" id="shareLink"
+                               value="{{ share_url }}" readonly aria-label="Room link">
+                        <button class="btn btn-outline-secondary" type="button" id="copyLink">
+                            <i class="bi bi-clipboard"></i><span class="d-none d-sm-inline ms-1">Copy</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            {% if host_secret %}
+            {# Shown exactly once, right after creation. The server keeps only an
+               Argon2 hash of it and can never show it again. #}
+            <div class="card mb-3">
+                <div class="card-header"><i class="bi bi-key me-2"></i>Your host key</div>
+                <div class="card-body">
+                    <p class="text-muted small">
+                        You are the host of this room in this browser already. Save this key to
+                        take host rights back on another device — it is shown once and cannot be
+                        recovered.
+                    </p>
+                    <div class="secret-box" id="hostSecret">{{ host_secret }}</div>
+                    <button class="btn btn-outline-secondary btn-sm mt-2" type="button" id="copySecret">
+                        <i class="bi bi-clipboard me-1"></i>Copy key
+                    </button>
+                </div>
+            </div>
+            {% endif %}
+
+            {% if is_host %}
+            <div class="card mb-3" id="hostControls">
+                <button type="button" class="card-header d-flex justify-content-between align-items-center bg-transparent border-0 w-100 text-start"
+                        id="hostToggle" aria-expanded="false">
+                    <span><i class="bi bi-sliders me-2"></i>Host controls</span>
+                    <i class="bi bi-chevron-down" id="hostChevron"></i>
+                </button>
+                <div class="card-body pt-0 d-none" id="hostPanel">
+                    <div class="d-flex flex-wrap gap-2 mb-3">
+                        <button class="btn btn-outline-secondary btn-sm" data-host-action="skip">
+                            <i class="bi bi-skip-forward me-1"></i>Skip
+                        </button>
+                        <button class="btn btn-outline-secondary btn-sm" data-host-action="lock">
+                            <i class="bi bi-{{ 'unlock' if room.queue_locked else 'lock' }} me-1"></i>
+                            {{ 'Unlock queue' if room.queue_locked else 'Lock queue' }}
+                        </button>
+                        <button class="btn btn-outline-secondary btn-sm" data-host-action="voting">
+                            <i class="bi bi-hand-thumbs-up me-1"></i>
+                            {{ 'Disable voting' if room.voting_enabled else 'Enable voting' }}
+                        </button>
+                    </div>
+
+                    <div class="row g-3 mb-3">
+                        <div class="col-12 col-md-6">
+                            <label class="form-label small text-muted" for="roomName">Room name</label>
+                            <div class="input-group">
+                                <input id="roomName" class="form-control" maxlength="80" value="{{ room.name }}">
+                                <button class="btn btn-outline-secondary" type="button" data-host-action="rename">
+                                    <i class="bi bi-check-lg"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <label class="form-label small text-muted" for="maxPending">Songs per listener</label>
+                            <input id="maxPending" class="form-control" type="number" min="1" max="50"
+                                   value="{{ room.max_pending_per_listener }}" data-host-setting="max_pending_per_listener">
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <label class="form-label small text-muted" for="maxListeners">Max listeners</label>
+                            <input id="maxListeners" class="form-control" type="number" min="1" max="10000"
+                                   value="{{ room.max_listeners }}" data-host-setting="max_listeners">
+                        </div>
+                    </div>
+
+                    <h6 class="text-muted small text-uppercase">Listeners</h6>
+                    <div id="listenerList" class="mb-3">
+                        <p class="text-muted small mb-0">Loading…</p>
+                    </div>
+
+                    <button class="btn btn-outline-danger btn-sm" type="button" data-host-action="delete">
+                        <i class="bi bi-trash me-1"></i>Delete room
+                    </button>
+                </div>
+            </div>
+            {% else %}
+            <div class="card mb-3">
+                <button type="button" class="card-header d-flex justify-content-between align-items-center bg-transparent border-0 w-100 text-start"
+                        id="claimToggle" aria-expanded="false">
+                    <span><i class="bi bi-key me-2"></i>Are you the host?</span>
+                    <i class="bi bi-chevron-down"></i>
+                </button>
+                <div class="card-body pt-0 d-none" id="claimPanel">
+                    <p class="text-muted small">Paste the host key you were given when this room was created.</p>
+                    <div class="input-group">
+                        <input class="form-control" id="claimSecret" placeholder="Host key"
+                               autocomplete="off" aria-label="Host key">
+                        <button class="btn btn-outline-secondary" type="button" id="claimButton">Claim</button>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="col-12 col-lg-5">
+            <div class="card mb-3">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-music-note-list me-2"></i>Up next</span>
+                    <span class="text-muted small" id="queueCount">{{ queue|length }}</span>
+                </div>
+                <div class="card-body">
+                    <form id="addTrackForm" class="mb-3">
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-youtube"></i></span>
+                            <input class="form-control" type="url" inputmode="url" name="url"
+                                   placeholder="Paste a YouTube link" aria-label="YouTube link"
+                                   {{ 'disabled' if add_disabled_reason else '' }}>
+                            <button class="btn btn-primary" type="submit"
+                                    {{ 'disabled' if add_disabled_reason else '' }}>
+                                <i class="bi bi-plus-lg"></i><span class="d-none d-sm-inline ms-1">Add</span>
+                            </button>
+                        </div>
+                        <div class="form-text text-muted mt-2 {{ '' if add_disabled_reason else 'd-none' }}"
+                             id="addDisabledReason">
+                            <i class="bi bi-lock me-1"></i>{{ add_disabled_reason or '' }}
+                        </div>
+                    </form>
+
+                    <div id="queue">{% include "_queue.html" %}</div>
+                </div>
+            </div>
+
+            <div class="card {{ '' if history else 'd-none' }}" id="historyCard">
+                <div class="card-header"><i class="bi bi-clock-history me-2"></i>Recently played</div>
+                <div class="card-body" id="history">{% include "_history.html" %}</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

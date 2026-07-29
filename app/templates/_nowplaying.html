@@ -1,0 +1,27 @@
+{# Swapped on every playback event. Never contains the <audio> element. #}
+{% if now_playing.track %}
+    {% set track = now_playing.track %}
+    {% if track.thumbnail_url %}
+    <img class="player-art" src="{{ track.thumbnail_url }}" alt="" loading="lazy">
+    {% else %}
+    <div class="player-art player-art-placeholder"><i class="bi bi-music-note-beamed"></i></div>
+    {% endif %}
+
+    <div class="player-body" data-position="{{ now_playing.position_s }}" data-duration="{{ track.duration_s }}">
+        <div class="player-title" title="{{ track.title }}">{{ track.title }}</div>
+        <div class="player-meta">
+            {% if track.channel %}{{ track.channel }} · {% endif %}added by {{ track.added_by }}
+        </div>
+        <div class="player-progress"><span id="progressBar" style="width: {{ progress_percent }}%"></span></div>
+        <div class="d-flex justify-content-between player-meta mt-1">
+            <span id="positionLabel">{{ now_playing.position_s | duration }}</span>
+            <span>{{ track.duration_s | duration }}</span>
+        </div>
+    </div>
+{% else %}
+    <div class="player-art player-art-placeholder"><i class="bi bi-music-note-beamed"></i></div>
+    <div class="player-body">
+        <div class="player-title">Nothing playing yet</div>
+        <div class="player-meta">Queue a song and the radio starts.</div>
+    </div>
+{% endif %}
