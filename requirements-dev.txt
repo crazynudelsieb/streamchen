@@ -9,7 +9,7 @@ httpx>=0.28.1,<1.0
 # The test suite runs without Postgres or Redis: SQLite stands in for the
 # database and fakeredis for the bus, so CI needs no services.
 aiosqlite>=0.22.1,<1.0
-fakeredis>=2.26,<3.0
+fakeredis>=2.37.0,<3.0
 
 # Linter. Rules live in ruff.toml; CI runs `ruff check .` as a release gate.
 ruff>=0.16.0,<1.0
