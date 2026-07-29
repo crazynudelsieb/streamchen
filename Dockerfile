@@ -1,7 +1,7 @@
 # Multi-stage production Dockerfile for the streamchen API.
 
 # Build stage - includes build tools and dependencies
-FROM python:3.14.5-slim AS builder
+FROM python:3.14.6-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -22,7 +22,7 @@ RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Production stage - minimal runtime image
-FROM python:3.14.5-slim AS production
+FROM python:3.14.6-slim AS production
 
 LABEL org.opencontainers.image.title="streamchen"
 LABEL org.opencontainers.image.description="Collaborative radio — one room, one stream, everybody's queue"
