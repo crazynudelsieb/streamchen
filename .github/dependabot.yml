@@ -34,6 +34,24 @@ updates:
       - "dependencies"
       - "docker"
 
+  # The Icecast image is built from its own directory, which the entry above
+  # does not reach -- Dependabot only scans the directory it is given.
+  - package-ecosystem: "docker"
+    directory: "/docker/icecast"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 5
+    assignees:
+      - "crazynudelsieb"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "docker"
+
   # Enable version updates for GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
