@@ -22,7 +22,7 @@ yt-dlp>=2025.1.15
 # --- Templates ---
 # Server-rendered pages; the frontend owns no state, so there is nothing for a
 # build toolchain to do here.
-jinja2>=3.1,<4.0
+jinja2>=3.1.6,<4.0
 
 # --- Misc ---
 python-dotenv>=1.0,<2.0
