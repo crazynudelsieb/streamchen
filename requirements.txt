@@ -11,7 +11,7 @@ asyncpg>=0.30,<1.0
 redis>=8.0.1,<9.0
 
 # --- Security ---
-argon2-cffi>=23.1,<26.0
+argon2-cffi>=25.1.0,<26.0
 
 # --- Playback ---
 # The resolver for YouTube metadata and audio. Pinned loosely on purpose:
