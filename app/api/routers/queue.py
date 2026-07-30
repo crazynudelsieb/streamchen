@@ -19,9 +19,10 @@ from app.api.deps import (
     has_host_secret,
     require_room,
 )
+from app.api.guards import spam_guard
 from app.config import Settings
 from app.models import STATE_QUEUED, Listener, Room, Track, utcnow
-from app.ratelimit import Limit, check, clear_strikes, record_strike
+from app.ratelimit import Limit, check, clear_strikes
 from app.schemas import SearchResult, TrackAdd, TrackOut, VoteIn
 from app.service import (
     is_duplicate,
@@ -42,38 +43,6 @@ router = APIRouter(tags=["queue"])
 
 # Starlette renamed its 422 constant mid-1.x; the number never moved.
 HTTP_422_UNPROCESSABLE = 422
-
-
-async def _spam_guard(
-    db: AsyncSession,
-    redis: Redis,
-    settings: Settings,
-    listener: Listener,
-    scope: str,
-    limit: Limit,
-) -> None:
-    """Rate limit, and escalate persistent flooding into a shadow ban.
-
-    A listener who keeps hammering after being told no is not impatient, they
-    are a bot; the ban is silent so they get no feedback to tune against.
-    """
-    identity = f"{scope}:{listener.id}"
-    verdict = await check(redis, scope, str(listener.id), limit)
-    if verdict.allowed:
-        return
-
-    strikes = await record_strike(redis, identity, settings.strike_window_s)
-    if strikes >= settings.shadow_ban_strikes and not listener.is_shadow_banned():
-        listener.shadow_ban(settings.shadow_ban_minutes)
-        # Committed here on purpose: the exception below unwinds the request
-        # transaction, and the ban is the one thing that has to survive it.
-        await db.commit()
-
-    raise HTTPException(
-        status.HTTP_429_TOO_MANY_REQUESTS,
-        "Slow down a moment.",
-        headers={"Retry-After": str(verdict.retry_after_s)},
-    )
 
 
 @router.get("/rooms/{token}/search", response_model=list[SearchResult])
@@ -114,6 +83,9 @@ async def search(
             query,
             limit=settings.search_results,
             metadata_ttl_s=settings.metadata_cache_ttl_s,
+            # Not a filter: a hit the room would refuse is still shown, just
+            # never above one it would accept.
+            max_duration_s=settings.max_track_duration_s,
         )
     except YouTubeError as exc:
         raise HTTPException(HTTP_422_UNPROCESSABLE, str(exc)) from exc
@@ -150,7 +122,7 @@ async def add_track(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "The host locked the queue")
 
     if not is_host:
-        await _spam_guard(
+        await spam_guard(
             db,
             redis,
             settings,
@@ -273,7 +245,7 @@ async def vote(
     if not room.voting_enabled:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Voting is disabled in this room")
 
-    await _spam_guard(
+    await spam_guard(
         db,
         redis,
         settings,

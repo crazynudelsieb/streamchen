@@ -353,6 +353,8 @@ def room_settings(room: Room) -> RoomSettings:
     return RoomSettings(
         voting_enabled=room.voting_enabled,
         queue_locked=room.queue_locked,
+        stream_stopped=room.stream_stopped,
+        chat_enabled=room.chat_enabled,
         max_pending_per_listener=room.max_pending_per_listener,
         max_listeners=room.max_listeners,
         fallback_playlist=room.fallback_playlist,

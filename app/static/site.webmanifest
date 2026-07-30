@@ -1,18 +1,52 @@
 {
-  "name": "streamchen",
+  "id": "/",
+  "name": "streamchen — listen together",
   "short_name": "streamchen",
-  "description": "A private online radio you share with a link.",
-  "start_url": "/",
+  "description": "A private online radio you share with a link. Everyone hears the same stream, everyone adds songs, everyone votes.",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["music", "entertainment", "social"],
+  "start_url": "/?source=pwa",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
   "background_color": "#111827",
   "theme_color": "#16a34a",
+  "prefer_related_applications": false,
   "icons": [
     {
-      "src": "/icon.svg",
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/static/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Start a room",
+      "short_name": "New room",
+      "description": "Create a room and get a link to share",
+      "url": "/?source=pwa",
+      "icons": [{ "src": "/static/icon-192.png", "sizes": "192x192" }]
     }
   ]
 }

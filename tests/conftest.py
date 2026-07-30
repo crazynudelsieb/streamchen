@@ -30,6 +30,7 @@ def settings() -> Settings:
         # loose so unrelated tests are not tripped by the rate limiter.
         add_rate_limit=100,
         vote_rate_limit=100,
+        chat_rate_limit=1000,
     )
 
 

@@ -89,6 +89,11 @@ class Settings:
     # everyone in it, so it is capped to stop one listener spamming refreshes.
     rename_rate_window_s: int = 60
     rename_rate_limit: int = 6
+    # Chat costs nothing upstream and nothing in the database, so this is
+    # loose: it is here to stop a flood filling everyone's screen, not to
+    # ration talking.
+    chat_rate_window_s: int = 10
+    chat_rate_limit: int = 6
     shadow_ban_minutes: int = 15
     shadow_ban_strikes: int = 5
     strike_window_s: int = 300
@@ -175,6 +180,8 @@ class Settings:
             search_results=_int("SEARCH_RESULTS", 8),
             rename_rate_window_s=_int("RENAME_RATE_WINDOW_S", 60),
             rename_rate_limit=_int("RENAME_RATE_LIMIT", 6),
+            chat_rate_window_s=_int("CHAT_RATE_WINDOW_S", 10),
+            chat_rate_limit=_int("CHAT_RATE_LIMIT", 6),
             shadow_ban_minutes=_int("SHADOW_BAN_MINUTES", 15),
             shadow_ban_strikes=_int("SHADOW_BAN_STRIKES", 5),
             metadata_cache_ttl_s=_int("METADATA_CACHE_TTL_S", 24 * 3600),

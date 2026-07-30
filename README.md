@@ -16,8 +16,9 @@ Part of the **appchen** family, alongside
 - **A shared stream, not synchronised players.** Everyone is listening to one
   Icecast mount, so nobody drifts out of sync.
 - **A queue anyone can add to.** Search for a song by name or paste a YouTube
-  link; the room hears it when its turn comes. Search goes through YouTube
-  Music, so the results are songs.
+  link; the room hears it when its turn comes. Search asks for a page of
+  candidates and ranks them, so "artist - song" returns *that recording* rather
+  than a live cut and the rest of the artist's catalogue.
 - **A radio that keeps going.** When the queue runs dry the room keeps playing:
   from the host's fallback playlist if they set one, otherwise from YouTube's
   mix for whatever played last. Only while somebody is listening, and always
@@ -29,7 +30,18 @@ Part of the **appchen** family, alongside
   account: the name lives on that room only.
 - **Voting.** Up and down votes decide which of *your* songs plays in your
   turn — they cannot buy you extra turns.
-- **Host controls.** Skip, reorder, lock the queue, remove listeners.
+- **A stream that follows the room.** It starts when somebody arrives and stops
+  when the last listener leaves, so nothing is ever encoded for nobody. A host
+  can also stop it by hand, which overrules that until they start it again —
+  and stopping the stream never touches the room, the queue or the link.
+- **Chat.** A line beside the player, delivered on the socket the page already
+  holds open. Kept in memory, never in the database, gone with the room.
+- **A cat.** Everyone gets one, drawn from their session on this server. No
+  avatar service, so nobody is told who is in your room.
+- **Host controls.** Skip, reorder, lock the queue, rename the room (the link
+  never changes), stop the stream, turn chat off, remove listeners.
+- **Installable.** A real PWA: manifest, icons, offline page, and lock-screen
+  controls through the Media Session API.
 - **Spam protection.** Rate limits, per-listener queue caps, and automatic,
   silent shadow bans for flooders.
 - **Nothing retained.** Audio is fetched, streamed and deleted. The only
@@ -63,7 +75,7 @@ Part of the **appchen** family, alongside
 | --- | --- | --- |
 | App | FastAPI + Jinja2 | Rooms, queue, voting, moderation, WebSocket, rendered pages. |
 | Postgres | — | Rooms, tracks, listeners, votes, bans. |
-| Redis | — | Events, presence, rate limits, short-lived caches. Disposable. |
+| Redis | — | Events, presence, chat, rate limits, short-lived caches. Disposable. |
 | Worker | yt-dlp + ffmpeg | Playback. One active worker per room. |
 | Icecast | — | Audio delivery. Nothing else. |
 
@@ -71,7 +83,10 @@ Part of the **appchen** family, alongside
 Bootstrap Icons and Inter are vendored under [`app/static/vendor/`](app/static/vendor/)
 (~950K, same versions as konsumchen), and the client behaviour is one
 dependency-free [`app.js`](app/static/app.js). Nothing is fetched from a CDN,
-so the app works under a strict CSP and leaks nothing to third parties.
+so the app works under a strict CSP and leaks nothing to third parties. The
+PWA icons are raster because an installable app needs them to be; they are
+drawn from the same mark by [`tools/make_icons.py`](tools/make_icons.py) with
+the standard library and committed, so there is still nothing to build.
 
 The full design document is [`concept.md`](concept.md); the code follows its
 section numbering in comments where a decision traces back to it. One
@@ -109,6 +124,27 @@ refetches `/r/<token>/live` — a rendered fragment containing the player, the
 queue and the history — and swaps the three regions into place. A missed
 event, a dropped socket or a flushed Redis all heal on the next update, and
 there is exactly one implementation of "what the queue looks like".
+
+Chat is the one exception, and it earns it: a message travels whole and is
+appended in place. Refetching the room because somebody typed "lol" would cost
+a database round trip and three DOM swaps per word, and unlike queue state a
+chat line has no authoritative version to disagree with. A client that missed
+one is missing a line, not showing a lie, and reconnecting refills from the
+history endpoint.
+
+### How search decides
+
+A flat video search returns twenty-five candidates with their titles,
+durations, channels and view counts in the listing itself — one request, no
+per-hit extraction — and the YouTube Music catalogue is asked at the same time
+for nothing but its ids, which is the evidence that a result is a song rather
+than a lecture. Everything is then scored ([`app/youtube.py`](app/youtube.py)):
+relevance is what a result *is*, and everything else is a tiebreak. A hit
+missing half the words of the query cannot climb back on view count; a
+different recording of the right song sits below the right one and stays on the
+page; the artist's own channel, an "(Official Video)" and the catalogue all
+count for something. The properties that matter are pinned in
+[`tests/test_search_ranking.py`](tests/test_search_ranking.py).
 
 ---
 
@@ -167,9 +203,12 @@ only required variables.
 | [`app/api/routers/`](app/api/routers/) | JSON API and the WebSocket. |
 | [`app/service.py`](app/service.py) | Business logic shared by both. |
 | [`app/scheduling.py`](app/scheduling.py) | Fair queue ordering (pure functions). |
+| [`app/chat.py`](app/chat.py) | Room chat: a capped Redis list, nothing else. |
+| [`app/avatars.py`](app/avatars.py) | The cats. |
 | [`app/worker/`](app/worker/) | Playback pipeline and the audio cache. |
 | [`app/templates/`](app/templates/) | Jinja templates; `_*.html` are fragments. |
 | [`app/static/app.js`](app/static/app.js) | All client behaviour. |
+| [`app/static/sw.js`](app/static/sw.js) | Service worker; caches the shell and nothing live. |
 
 ---
 
@@ -189,6 +228,7 @@ annotated list. The ones worth knowing:
 | `ADD_RATE_LIMIT` / `ADD_RATE_WINDOW_S` | `1` / `15` | Song submissions. |
 | `VOTE_RATE_LIMIT` / `VOTE_RATE_WINDOW_S` | `5` / `10` | Votes. |
 | `RENAME_RATE_LIMIT` / `RENAME_RATE_WINDOW_S` | `6` / `60` | Name changes. |
+| `CHAT_RATE_LIMIT` / `CHAT_RATE_WINDOW_S` | `6` / `10` | Chat messages. |
 | `SHADOW_BAN_MINUTES` | `15` | How long a flooder is silently muted. |
 | `AUDIO_CACHE_BUDGET_BYTES` | `1 GiB` | Hard cap on the temporary cache. |
 | `ICECAST_BURST_SIZE` | `65536` | Sent on connect: trades start-up delay against how far behind live a listener begins. |
@@ -207,8 +247,12 @@ annotated list. The ones worth knowing:
 - Pages and API responses are `no-store`; the audio stream is
   `no-store, no-cache, must-revalidate`; only versioned static assets are
   cached, and those are immutable.
+- Chat lives in a capped Redis list and never reaches Postgres. Avatars are
+  generated from a hash of the listener's id, on this server.
 - Idle rooms and everything in them are deleted after `ROOM_IDLE_DAYS`.
 - No CDN, no analytics, no third-party requests of any kind from the browser.
+  The service worker caches the shell and the icons, and is forbidden from
+  touching the API, the room page or the stream.
 
 ---
 

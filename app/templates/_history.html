@@ -1,10 +1,22 @@
+{# Titles link out to the source. A room plays what its listeners linked to, so
+   "where was that from" has an obvious answer and no reason to be hidden. #}
 {% for track in history %}
 <div class="list-row">
     <div class="queue-body">
-        <div class="queue-title" title="{{ track.title }}">{{ track.title }}</div>
-        <div class="queue-meta">
-            {{ track.duration_s | duration }} · {{ track.added_by }}
-            {% if track.started_at %} · {{ track.started_at | ago }}{% endif %}
+        <div class="queue-title">
+            <a class="track-link" href="https://www.youtube.com/watch?v={{ track.youtube_id }}"
+               target="_blank" rel="noopener noreferrer nofollow"
+               title="{{ track.title }} — open on YouTube">{{ track.title }}</a>
+        </div>
+        <div class="queue-meta d-flex align-items-center gap-1 flex-wrap">
+            <span>{{ track.duration_s | duration }}</span>
+            <span aria-hidden="true">·</span>
+            <img class="avatar avatar-xs" src="{{ avatar(track.added_by_id) }}" alt=""
+                 width="20" height="20" loading="lazy">
+            <span>{{ track.added_by }}</span>
+            {% if track.started_at %}
+            <span aria-hidden="true">·</span><span>{{ track.started_at | ago }}</span>
+            {% endif %}
         </div>
     </div>
 </div>

@@ -72,6 +72,18 @@ class Room(Base):
     # --- Settings (concept §6) ---
     voting_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     queue_locked: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # The host's stop. A room without a source is still a room: its queue, its
+    # listeners, its name and above all its link survive, and starting the
+    # stream again picks up where it left off.
+    #
+    # This is also the manual override of the automatic behaviour. A stream
+    # normally follows the listeners — it starts when somebody arrives and
+    # stops when the last one leaves — but a host who stopped it means it,
+    # so nobody's arrival starts it again until they say so.
+    stream_stopped: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    chat_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     max_pending_per_listener: Mapped[int] = mapped_column(Integer, default=3)
     max_listeners: Mapped[int] = mapped_column(Integer, default=100)
     fallback_playlist: Mapped[str | None] = mapped_column(Text, default=None)

@@ -17,13 +17,21 @@
     {% endif %}
 
     <div class="queue-body">
-        <div class="queue-title" title="{{ track.title }}">{{ track.title }}</div>
-        <div class="queue-meta">
-            {{ track.duration_s | duration }} · {{ track.added_by }}
-            {% if track.radio %}<span class="badge-soft ms-2">
+        <div class="queue-title">
+            <a class="track-link" href="https://www.youtube.com/watch?v={{ track.youtube_id }}"
+               target="_blank" rel="noopener noreferrer nofollow"
+               title="{{ track.title }} — open on YouTube">{{ track.title }}</a>
+        </div>
+        <div class="queue-meta d-flex align-items-center gap-1 flex-wrap">
+            <span>{{ track.duration_s | duration }}</span>
+            <span aria-hidden="true">·</span>
+            <img class="avatar avatar-xs" src="{{ avatar(track.added_by_id) }}" alt=""
+                 width="20" height="20" loading="lazy">
+            <span>{{ track.added_by }}</span>
+            {% if track.radio %}<span class="badge-soft ms-1">
                 <i class="bi bi-broadcast me-1"></i>radio</span>{% endif %}
-            {% if track.mine %}<span class="badge-soft badge-mine ms-2">you</span>{% endif %}
-            {% if track.shadowed %}<span class="badge-soft ms-2">pending review</span>{% endif %}
+            {% if track.mine %}<span class="badge-soft badge-mine ms-1">you</span>{% endif %}
+            {% if track.shadowed %}<span class="badge-soft ms-1">pending review</span>{% endif %}
         </div>
     </div>
 

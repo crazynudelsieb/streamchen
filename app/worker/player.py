@@ -41,6 +41,7 @@ from app.models import (
     STATE_FAILED,
     STATE_PLAYED,
     STATE_PLAYING,
+    STATE_QUEUED,
     STATE_SKIPPED,
     Track,
     utcnow,
@@ -226,6 +227,7 @@ class RoomPlayer:
             await self._discard_prepared()
             self._downloads.abandon()
             await self._stop_encoder()
+            await self._requeue_current()
             await events.set_now_playing(self.redis, self.room_id, None)
 
     async def _watch_control(self) -> None:
@@ -486,6 +488,32 @@ class RoomPlayer:
         await self._write(chunk)
         while time.monotonic() < deadline and not self._wake.is_set():
             await self._write(chunk)
+
+    async def _requeue_current(self) -> None:
+        """Give the track that was playing back to the queue.
+
+        A player is stopped mid-song whenever the room's source goes away: the
+        last listener left, the host stopped the stream, this worker lost the
+        lock. Its row is still marked playing and nothing will ever finish it,
+        so it would sit in "now playing" forever and never be played. Handing
+        it back is also what a listener expects — the stream returns and the
+        song they queued is still waiting.
+        """
+        track_id, self._current_track_id = self._current_track_id, None
+        self.current_youtube_id = None
+        if track_id is None:
+            return
+
+        async with self.sessionmaker() as db:
+            result = await db.execute(select(Track).where(Track.id == track_id))
+            track = result.scalar_one_or_none()
+            if track is None or track.state != STATE_PLAYING:
+                return
+            track.state = STATE_QUEUED
+            track.started_at = None
+            await db.commit()
+
+        await events.publish(self.redis, self.room_id, events.QUEUE_CHANGED, {})
 
     async def _finish(self, track_id: uuid.UUID, state: str, error: str | None = None) -> None:
         async with self.sessionmaker() as db:

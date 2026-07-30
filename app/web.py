@@ -9,11 +9,12 @@ looks like" rather than two.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +30,7 @@ from app.api.deps import (
     require_room,
 )
 from app.api.playback import playback_position
+from app.avatars import avatar_seed, cat_svg
 from app.config import Settings
 from app.contact import imprint_payload, legal_payload
 from app.models import Listener, Room
@@ -43,6 +45,11 @@ from app.service import (
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
+
+# Avatars are generated from their own URL, so the path is as immutable as a
+# versioned asset and the cache middleware treats it as one.
+AVATAR_PREFIX = "/a/"
+_SEED_RE = re.compile(r"^[0-9a-f]{6,32}$")
 
 router = APIRouter(include_in_schema=False)
 
@@ -136,6 +143,7 @@ def build_templates(settings: Settings) -> Jinja2Templates:
         room_idle_days=settings.room_idle_days,
         # Static URLs carry the release so the immutable cache header is safe.
         static=lambda path: f"/static/{path}?v={__version__}",
+        avatar=lambda value: f"{AVATAR_PREFIX}{avatar_seed(value)}.svg",
         no_index=False,
         show_connection=False,
     )
@@ -183,6 +191,39 @@ async def index(request: Request) -> HTMLResponse:
 @router.get("/privacy", response_class=HTMLResponse)
 async def privacy(request: Request) -> HTMLResponse:
     return _page(request, "privacy.html")
+
+
+@router.get("/sw.js")
+async def service_worker() -> Response:
+    """The service worker, served from the root.
+
+    A worker may only control what is under its own path, so the one file that
+    has to live at ``/`` rather than under ``/static`` is this one. Not cached:
+    it is how every other cache gets replaced, and a stale one is the hardest
+    kind of stale to clear.
+    """
+    return FileResponse(
+        STATIC_DIR / "sw.js",
+        # Charset spelled out: a classic script without one is decoded using
+        # the referring document's encoding, which is not a guess worth making.
+        media_type="text/javascript; charset=utf-8",
+        headers={"Service-Worker-Allowed": "/"},
+    )
+
+
+@router.get(AVATAR_PREFIX + "{seed}.svg")
+async def avatar(seed: str) -> Response:
+    """A listener's cat.
+
+    Content-addressed: the seed *is* the drawing, so this can be cached for as
+    long as the browser likes and costs one request per person in the room,
+    once, ever. Drawn here rather than fetched from an avatar service, because
+    a service would mean the browser telling somebody else who is in the room
+    (see ``app/avatars.py``).
+    """
+    if not _SEED_RE.match(seed):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such avatar")
+    return Response(cat_svg(seed), media_type="image/svg+xml")
 
 
 @router.get("/imprint", response_class=HTMLResponse)

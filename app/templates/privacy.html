@@ -40,7 +40,9 @@
                     <li>
                         <i class="bi bi-x-circle-fill"></i>
                         <span><strong>No analytics, no advertising, no third-party trackers.</strong>
-                        Every asset on this page is served from this server.</span>
+                        Every asset on this page is served from this server — including the cat
+                        avatar beside your name, which is drawn here from your session rather
+                        than fetched from an avatar service.</span>
                     </li>
                     <li>
                         <i class="bi bi-x-circle-fill"></i>
@@ -60,6 +62,12 @@
                         <span>Rooms and everything in them are deleted once nobody has used them
                         for {{ room_idle_days }} days. A host can delete a room immediately at any
                         time.</span>
+                    </li>
+                    <li>
+                        <i class="bi bi-hourglass-split keep"></i>
+                        <span>Chat is never written to the database. A room keeps its last few
+                        dozen messages in memory so somebody arriving mid-conversation can follow
+                        it, and they are gone when the room is — or sooner.</span>
                     </li>
                     <li>
                         <i class="bi bi-hourglass-split keep"></i>

@@ -28,7 +28,9 @@
     {% endif %}
 
     <link rel="icon" type="image/svg+xml" href="{{ static('icon.svg') }}">
-    <link rel="apple-touch-icon" href="{{ static('icon.svg') }}">
+    <link rel="icon" type="image/png" sizes="32x32" href="{{ static('favicon-32.png') }}">
+    {# iOS ignores SVG here, so the home-screen icon has to be a PNG. #}
+    <link rel="apple-touch-icon" sizes="180x180" href="{{ static('apple-touch-icon.png') }}">
     <link rel="manifest" href="{{ static('site.webmanifest') }}">
 
     <link href="{{ static('vendor/inter/inter.css') }}" rel="stylesheet">
@@ -110,7 +112,9 @@
         .player-play { width: 56px; height: 56px; border-radius: 50%; padding: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 1.4rem; flex-shrink: 0; }
         .player-progress { height: 6px; border-radius: 999px; background: var(--bg-body); overflow: hidden; margin-top: .6rem; }
         .player-progress span { display: block; height: 100%; background: linear-gradient(90deg, var(--primary), var(--primary-dark)); transition: width .5s linear; }
-        .volume-slider { width: 110px; accent-color: var(--primary); }
+        /* Fixed width on purpose: stretched across the card it reads as a
+           progress bar, which is the one thing it must not be mistaken for. */
+        .volume-slider { flex: 0 0 auto; width: 130px; accent-color: var(--primary); }
 
         /* "Is this actually live?" is a listener's first question. */
         .live-badge { display: inline-flex; align-items: center; gap: .4rem; font-size: .72rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--primary); }
@@ -149,6 +153,61 @@
 
         .list-row { display: flex; align-items: center; justify-content: space-between; padding: .75rem 0; border-bottom: 1px solid var(--border-color); }
         .list-row:last-child { border-bottom: none; }
+
+        /* A title that goes to the source. Underlined only on hover so a queue
+           does not read as a page of links. */
+        .track-link { color: inherit; text-decoration: none; }
+        .track-link:hover, .track-link:focus-visible { color: var(--primary); text-decoration: underline; }
+
+        /* --- Avatars --- */
+        .avatar { border-radius: 50%; background: var(--bg-body); flex-shrink: 0; vertical-align: middle; }
+        .avatar-xs { width: 20px; height: 20px; }
+        .avatar-sm { width: 26px; height: 26px; }
+        .avatar-md { width: 34px; height: 34px; }
+
+        /* --- Room layout ---
+           One column on a phone, in the order things are used: player, what is
+           coming, who is talking, what has been. On a wide screen the chat
+           moves beside the player and runs the height of the page, which is
+           what the grid below is for -- the source order is the mobile order,
+           and every desktop position is assigned explicitly. */
+        .room-grid { display: flex; flex-direction: column; gap: 1.5rem; }
+        .room-grid > * { min-width: 0; }
+
+        @media (min-width: 992px) {
+            .room-grid {
+                display: grid;
+                grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+                grid-template-rows: auto auto 1fr;
+                align-items: start;
+                column-gap: 1.5rem;
+                row-gap: 1.5rem;
+            }
+            .room-player  { grid-column: 1; grid-row: 1; }
+            .room-queue   { grid-column: 1; grid-row: 2; }
+            .room-history { grid-column: 1; grid-row: 3; }
+            .room-chat    { grid-column: 2; grid-row: 1 / span 3; position: sticky; top: 1rem; }
+        }
+
+        /* --- Chat --- */
+        .chat-card { display: flex; flex-direction: column; }
+        .chat-log { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: .75rem 1rem; display: flex; flex-direction: column; gap: .7rem; }
+        .chat-log { height: 15rem; }
+        @media (min-width: 992px) { .chat-log { height: min(58vh, 34rem); } }
+        .chat-msg { display: flex; gap: .55rem; align-items: flex-start; }
+        .chat-body { min-width: 0; }
+        .chat-who { font-size: .72rem; color: var(--text-muted); display: flex; gap: .4rem; align-items: baseline; }
+        .chat-who .name { font-weight: 700; color: var(--text-secondary); }
+        .chat-text { font-size: .9rem; line-height: 1.4; overflow-wrap: anywhere; }
+        .chat-msg.mine .chat-who .name { color: var(--primary); }
+        .chat-empty { color: var(--text-muted); font-size: .85rem; text-align: center; margin: auto 0; }
+        .chat-form { border-top: 1px solid var(--border-color); padding: .7rem 1rem; }
+
+        /* --- Stream state ---
+           Green is the colour of "this is live". A stopped stream must not
+           borrow it, or the badge contradicts its own words. */
+        .stream-off .player-play { opacity: .5; pointer-events: none; }
+        .stream-off .live-badge { color: var(--text-muted); }
 
         .share-input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9rem; }
         .secret-box { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; background: var(--bg-body); border: 1px dashed var(--border-color); border-radius: 10px; padding: .65rem .8rem; font-size: .85rem; }
@@ -195,11 +254,39 @@
             .container { padding-left: 1rem; padding-right: 1rem; }
             .card-body { padding: 1rem; }
             .player-art { width: 64px; height: 64px; }
-            .player-play { width: 48px; height: 48px; font-size: 1.2rem; }
+            .player-play { width: 56px; height: 56px; font-size: 1.4rem; }
             .queue-row { padding: .85rem 0; }
             .queue-art { display: none; }
             .vote-btn { width: 40px; height: 40px; }
             .footer .disclaimer { font-size: .72rem; }
+
+            /* Room, on a phone. Tighter, and with the chat log short enough
+               that the queue above it is still reachable by thumb. */
+            .room-grid { gap: 1rem; }
+            .chat-log { height: 13rem; }
+            .chat-form .btn { min-height: 42px; }
+            h1.h3 { font-size: 1.35rem; }
+
+            /* A queue row on a phone is four tap targets and a title, and the
+               title is what the row is *for*. So the number goes (the order is
+               the order), the buttons come back to a thumb's width rather than
+               a thumb and a half, and everything that frees goes to the name
+               of the song. */
+            .queue-position { display: none; }
+            .queue-row { gap: .4rem; }
+            .vote-btn { width: 36px; height: 36px; }
+            .vote-score { min-width: 1.4rem; font-size: .9rem; }
+            .queue-title { font-size: .95rem; }
+
+            /* Room for a thumb, where there is room for it. */
+            .volume-slider { flex: 1 1 auto; width: auto; }
+        }
+
+        /* Installed as an app: no browser chrome to fall back on, so the page
+           itself has to respect the notch and the home indicator. */
+        @media (display-mode: standalone) {
+            body { padding-top: env(safe-area-inset-top); }
+            .footer { padding-bottom: calc(1.25rem + env(safe-area-inset-bottom)); }
         }
     </style>
     {% block head_extra %}{% endblock %}

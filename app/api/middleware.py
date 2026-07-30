@@ -17,6 +17,10 @@ from app.security import new_csrf_token, new_session_id, tokens_equal
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
+# Paths whose content is decided by the URL itself and can therefore never go
+# stale: versioned static assets, and the generated avatars.
+IMMUTABLE_PREFIXES = ("/static/", "/a/")
+
 
 def _valid_session(value: str | None) -> bool:
     """Only ever trust our own format, so a hand-written cookie cannot be used
@@ -63,8 +67,9 @@ class SessionMiddleware(BaseHTTPMiddleware):
 
         response = await call_next(request)
 
-        if request.url.path.startswith("/static/"):
-            # Versioned URLs (?v=<release>), so the bytes behind one never
+        if request.url.path.startswith(IMMUTABLE_PREFIXES):
+            # Content-addressed URLs — a versioned asset (?v=<release>) or an
+            # avatar drawn from its own seed — so the bytes behind one never
             # change and it can be cached for as long as the browser likes.
             response.headers["Cache-Control"] = "public,max-age=31536000,immutable"
         else:

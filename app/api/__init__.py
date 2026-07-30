@@ -22,7 +22,7 @@ from starlette.exceptions import HTTPException
 
 from app import __version__, web
 from app.api.middleware import SessionMiddleware
-from app.api.routers import meta, moderation, queue, rooms, ws
+from app.api.routers import chat, meta, moderation, queue, rooms, ws
 from app.config import Settings, get_settings
 from app.database import create_engine, create_schema, create_sessionmaker
 from app.redis_client import make_redis
@@ -88,6 +88,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(meta.router, prefix="/api")
     application.include_router(rooms.router, prefix="/api")
     application.include_router(queue.router, prefix="/api")
+    application.include_router(chat.router, prefix="/api")
     application.include_router(moderation.router, prefix="/api")
     application.include_router(ws.router, prefix="/api")
     application.include_router(web.router)
