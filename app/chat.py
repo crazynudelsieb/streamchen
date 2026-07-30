@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 
 from redis.asyncio import Redis
 
-from app.avatars import avatar_seed
+from app.avatars import listener_seed
 from app.models import Listener
 
 # What a room remembers. Enough that somebody arriving mid-conversation can see
@@ -59,7 +59,9 @@ def message_for(listener: Listener, text: str) -> dict:
     return {
         "id": uuid.uuid4().hex,
         "name": listener.display_name,
-        "avatar": avatar_seed(listener.id),
+        # Copied into the line rather than resolved when it is read: this is what
+        # the sender looked like when they said it.
+        "avatar": listener_seed(listener),
         "text": text,
         "at": datetime.now(UTC).isoformat(timespec="seconds"),
     }

@@ -53,7 +53,8 @@
                 </button>
                 <span aria-hidden="true">·</span>
                 <span>you are</span>
-                <img class="avatar avatar-sm" src="{{ avatar(me.id) }}" alt="" width="26" height="26">
+                <img class="avatar avatar-sm" id="myAvatar" src="{{ avatar(my_avatar) }}"
+                     alt="" width="26" height="26">
                 {# A name is given on join; this only lets you override it. #}
                 <button type="button" class="btn btn-link btn-sm p-0 align-baseline"
                         id="nameEdit" aria-expanded="false" aria-label="Change your name">
@@ -62,7 +63,15 @@
                 {% if is_host %}<span class="badge-soft badge-mine ms-1">host</span>{% endif %}
             </div>
 
-            <div class="input-group input-group-sm mt-2 d-none" id="nameForm" style="max-width: 20rem">
+            <div class="input-group input-group-sm mt-2 d-none" id="nameForm" style="max-width: 22rem">
+                {# The cat you have now *is* the button: pressing it draws you as
+                   a different one, which needs no label to be obvious. #}
+                <button class="btn btn-outline-secondary" type="button" id="avatarShuffle"
+                        title="Draw me as a different cat"
+                        aria-label="Give me a different avatar">
+                    <img class="avatar avatar-xs" id="avatarPreview" src="{{ avatar(my_avatar) }}"
+                         alt="" width="20" height="20">
+                </button>
                 <input class="form-control" id="nameInput" maxlength="40"
                        value="{{ me.display_name }}" autocomplete="off"
                        aria-label="Your name in this room">

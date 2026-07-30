@@ -18,7 +18,7 @@
         <div class="player-meta d-flex align-items-center gap-1 flex-wrap">
             {% if track.channel %}<span>{{ track.channel }}</span><span aria-hidden="true">·</span>{% endif %}
             {% if track.radio %}<span>from the radio</span>{% else %}
-            <img class="avatar avatar-xs" src="{{ avatar(track.added_by_id) }}" alt=""
+            <img class="avatar avatar-xs" src="{{ avatar(track.added_by_avatar) }}" alt=""
                  width="20" height="20" loading="lazy">
             <span>added by {{ track.added_by }}</span>{% endif %}
         </div>

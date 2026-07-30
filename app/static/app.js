@@ -243,7 +243,10 @@
   // -- Your name -----------------------------------------------------------
   /* Names are generated on join so that taking part costs nothing; this is the
    * override for people who would rather be recognisable. Sending a blank name
-   * asks for another generated one, which is what the shuffle button does. */
+   * asks for another generated one, which is what the shuffle button does.
+   *
+   * The avatar sits in the same menu: it is the other half of "who am I here",
+   * and the one part of it that cannot be typed. */
   function wireName(token) {
     var edit = document.getElementById('nameEdit');
     var form = document.getElementById('nameForm');
@@ -251,6 +254,9 @@
     var label = document.getElementById('myName');
     var save = document.getElementById('nameSave');
     var shuffle = document.getElementById('nameShuffle');
+    var newCat = document.getElementById('avatarShuffle');
+    var preview = document.getElementById('avatarPreview');
+    var mine = document.getElementById('myAvatar');
     if (!edit || !form || !input || !label || !save || !shuffle) return;
 
     function openForm(value) {
@@ -271,27 +277,61 @@
       else closeForm();
     });
 
-    function submit(value, keepOpen) {
-      save.disabled = true;
-      shuffle.disabled = true;
-      return api('/rooms/' + token + '/me', {
-        method: 'PATCH', body: { display_name: value }, token: token
-      }).then(function (me) {
-        label.textContent = me.display_name;
-        input.value = me.display_name;
+    /* The cat is content-addressed, so a new one is simply a new src -- both
+     * where it is being chosen and where the page says who you are. */
+    function showAvatar(seed) {
+      if (!seed) return;
+      var src = '/a/' + encodeURIComponent(seed) + '.svg';
+      if (preview) preview.src = src;
+      if (mine) mine.src = src;
+    }
+
+    function busy(state) {
+      save.disabled = state;
+      shuffle.disabled = state;
+      if (newCat) newCat.disabled = state;
+    }
+
+    /* Both requests answer with the same listener. Only what was asked for is
+     * written back -- a new cat must not put a half-typed name back to what the
+     * server still has -- and then the room is refetched either way, because
+     * your name and your cat are on every track you queued and on the history. */
+    function change(request, failure, apply, keepOpen) {
+      busy(true);
+      return request.then(function (me) {
+        apply(me);
         if (!keepOpen) closeForm();
-        // The name is on every track this listener queued, and on the history.
         return refresh(token);
       }).catch(function (error) {
-        toast(error.message || 'Could not change your name', 'danger');
+        toast(error.message || failure, 'danger');
       }).finally(function () {
-        save.disabled = false;
-        shuffle.disabled = false;
+        busy(false);
       });
+    }
+
+    function submit(value, keepOpen) {
+      return change(api('/rooms/' + token + '/me', {
+        method: 'PATCH', body: { display_name: value }, token: token
+      }), 'Could not change your name', function (me) {
+        label.textContent = me.display_name;
+        input.value = me.display_name;
+      }, keepOpen);
     }
 
     save.addEventListener('click', function () { submit(input.value, false); });
     shuffle.addEventListener('click', function () { submit('', true); });
+
+    if (newCat) {
+      // Kept open: somebody who did not like that cat wants another press, not
+      // the menu shutting on them.
+      newCat.addEventListener('click', function () {
+        change(api('/rooms/' + token + '/me/avatar', {
+          method: 'POST', token: token
+        }), 'Could not draw you another cat', function (me) {
+          showAvatar(me.avatar);
+        }, true);
+      });
+    }
 
     input.addEventListener('keydown', function (event) {
       if (event.key === 'Enter') { event.preventDefault(); submit(input.value, false); }

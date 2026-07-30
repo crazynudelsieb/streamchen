@@ -30,7 +30,7 @@ from app.api.deps import (
     require_room,
 )
 from app.api.playback import now_playing_state
-from app.avatars import avatar_seed, cat_svg
+from app.avatars import cat_svg, listener_seed
 from app.config import Settings
 from app.contact import imprint_payload, legal_payload
 from app.models import Listener, Room
@@ -142,7 +142,9 @@ def build_templates(settings: Settings) -> Jinja2Templates:
         room_idle_days=settings.room_idle_days,
         # Static URLs carry the release so the immutable cache header is safe.
         static=lambda path: f"/static/{path}?v={__version__}",
-        avatar=lambda value: f"{AVATAR_PREFIX}{avatar_seed(value)}.svg",
+        # Takes a seed, not an id: whose cat is which is decided by the service
+        # layer now that a listener may have picked one (see app/avatars.py).
+        avatar=lambda seed: f"{AVATAR_PREFIX}{seed}.svg",
         no_index=False,
         show_connection=False,
     )
@@ -278,6 +280,9 @@ async def _room_context(
     return {
         "room": room,
         "me": listener,
+        # The listener row does not know which cat it is drawn as; resolved once
+        # here rather than in the template.
+        "my_avatar": listener_seed(listener),
         "is_host": is_host,
         "listeners": online,
         "now_playing": state,
