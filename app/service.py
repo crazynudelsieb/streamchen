@@ -34,6 +34,11 @@ from app.security import hash_secret, new_host_secret, new_room_token
 
 HISTORY_LIMIT = 20
 
+# Autoplay's stand-in submitter. Real session ids are uuid4 strings, so this
+# can never collide with one, and no browser can ever present it.
+RADIO_SESSION_ID = "radio"
+RADIO_DISPLAY_NAME = "radio"
+
 # Guest names. Anonymous but not indistinguishable -- a queue full of
 # "listener-3f2a" is unreadable, and asking for a name would be an account.
 _ADJECTIVES = (
@@ -90,9 +95,33 @@ async def get_listener(db: AsyncSession, room_id: uuid.UUID, session_id: str) ->
 
 async def count_listeners(db: AsyncSession, room_id: uuid.UUID) -> int:
     result = await db.execute(
-        select(func.count(Listener.id)).where(Listener.room_id == room_id)
+        select(func.count(Listener.id)).where(
+            Listener.room_id == room_id, Listener.session_id != RADIO_SESSION_ID
+        )
     )
     return int(result.scalar_one())
+
+
+async def radio_listener(db: AsyncSession, room: Room) -> Listener:
+    """The room's stand-in submitter for autoplay picks.
+
+    Autoplay needs an author because every track has one, but it is not a
+    participant: it holds no session, is filtered out of the listener count and
+    the host's listener list, and exists only so a radio pick can be shown and
+    attributed like any other track. Created on first use.
+    """
+    listener = await get_listener(db, room.id, RADIO_SESSION_ID)
+    if listener is not None:
+        return listener
+
+    listener = Listener(
+        room_id=room.id,
+        session_id=RADIO_SESSION_ID,
+        display_name=RADIO_DISPLAY_NAME,
+    )
+    db.add(listener)
+    await db.flush()
+    return listener
 
 
 async def join_room(
@@ -106,6 +135,10 @@ async def join_room(
     listener = await get_listener(db, room.id, session_id)
     if listener is not None:
         listener.last_seen_at = utcnow()
+        # Someone with the room open is reason enough to keep it alive: it is
+        # what stops the worker letting go of a room whose listeners are just
+        # listening, and what lets autoplay carry a quiet room.
+        room.last_active_at = listener.last_seen_at
         if as_host:
             listener.is_host = True
         return listener
@@ -211,6 +244,17 @@ async def is_duplicate(db: AsyncSession, room_id: uuid.UUID, youtube_id: str) ->
     return result.first() is not None
 
 
+async def queued_youtube_ids(db: AsyncSession, room_id: uuid.UUID) -> set[str]:
+    """Every id the duplicate check would reject right now."""
+    result = await db.execute(
+        select(Track.youtube_id).where(
+            Track.room_id == room_id,
+            Track.state.in_((STATE_QUEUED, STATE_PLAYING)),
+        )
+    )
+    return set(result.scalars().all())
+
+
 async def set_vote(
     db: AsyncSession, track: Track, listener: Listener, value: int
 ) -> int:
@@ -249,6 +293,8 @@ def serialize_track(track: Track, viewer: Listener | None = None) -> TrackOut:
     if viewer is not None:
         my_vote = next((v.value for v in track.votes if v.listener_id == viewer.id), 0)
 
+    is_radio = track.added_by is not None and track.added_by.session_id == RADIO_SESSION_ID
+
     return TrackOut(
         id=track.id,
         youtube_id=track.youtube_id,
@@ -264,6 +310,7 @@ def serialize_track(track: Track, viewer: Listener | None = None) -> TrackOut:
         added_by_id=track.added_by_id,
         mine=viewer is not None and track.added_by_id == viewer.id,
         my_vote=my_vote,
+        radio=is_radio,
         shadowed=track.shadow,
         created_at=track.created_at,
         started_at=track.started_at,
@@ -302,6 +349,8 @@ def now_playing(track: Track | None, viewer: Listener | None, position_s: float)
 
 __all__ = [
     "FINISHED_STATES",
+    "RADIO_DISPLAY_NAME",
+    "RADIO_SESSION_ID",
     "count_listeners",
     "create_room",
     "current_track",
@@ -317,6 +366,8 @@ __all__ = [
     "playable_tracks",
     "prune_idle_rooms",
     "queued_tracks",
+    "queued_youtube_ids",
+    "radio_listener",
     "recent_tracks",
     "room_settings",
     "serialize_track",

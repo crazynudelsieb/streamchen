@@ -10,7 +10,8 @@
     <div class="player-body" data-position="{{ now_playing.position_s }}" data-duration="{{ track.duration_s }}">
         <div class="player-title" title="{{ track.title }}">{{ track.title }}</div>
         <div class="player-meta">
-            {% if track.channel %}{{ track.channel }} · {% endif %}added by {{ track.added_by }}
+            {% if track.channel %}{{ track.channel }} · {% endif %}
+            {%- if track.radio %}from the radio{% else %}added by {{ track.added_by }}{% endif %}
         </div>
         <div class="player-progress"><span id="progressBar" style="width: {{ progress_percent }}%"></span></div>
         <div class="d-flex justify-content-between player-meta mt-1">

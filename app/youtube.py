@@ -14,15 +14,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from dataclasses import asdict, dataclass
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from redis.asyncio import Redis
 
+logger = logging.getLogger(__name__)
+
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _EMBED_PATHS = ("/embed/", "/shorts/", "/v/", "/live/")
+
+# Search and radio both come from YouTube Music rather than YouTube proper.
+# That is the whole music restriction: the songs section of a music search
+# contains songs, not lectures, podcasts or hour-long compilations.
+_MUSIC_SEARCH_URL = "https://music.youtube.com/search?q={query}#songs"
+_RADIO_URL = "https://www.youtube.com/watch?v={video}&list=RD{video}"
 
 
 class YouTubeError(RuntimeError):
@@ -154,6 +163,136 @@ async def fetch_metadata(
     metadata = metadata_from_info(youtube_id, info)
     await redis.set(_metadata_key(youtube_id), json.dumps(metadata.as_dict()), ex=ttl_s)
     return metadata
+
+
+# --- Discovery ---------------------------------------------------------------
+def _search_key(query: str) -> str:
+    return f"streamchen:search:{query}"
+
+
+def _radio_key(youtube_id: str) -> str:
+    return f"streamchen:radio:{youtube_id}"
+
+
+def normalize_query(value: str) -> str:
+    """Collapse whitespace and case so equivalent searches share a cache entry."""
+    return " ".join((value or "").split()).lower()
+
+
+def _flat_ids(url: str, limit: int) -> list[str]:
+    """Blocking. The video ids of a playlist-ish URL, in order.
+
+    ``extract_flat`` keeps this to one request: full metadata per entry would
+    be one extraction each. ``playlistend`` matters more than it looks — a
+    music search section is hundreds of entries long and yt-dlp will page
+    through all of them given the chance.
+    """
+    from yt_dlp import YoutubeDL
+
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "extract_flat": True,
+        "socket_timeout": 15,
+        "playlistend": limit,
+    }
+    with YoutubeDL(options) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    if not info:
+        return []
+
+    ids: list[str] = []
+    for entry in info.get("entries") or []:
+        candidate = (entry or {}).get("id") or ""
+        # Music results mix in channel and album ids, which are longer. Only an
+        # 11-character id is a video.
+        if _ID_RE.match(candidate) and candidate not in ids:
+            ids.append(candidate)
+    return ids[:limit]
+
+
+async def _cached_ids(redis: Redis, key: str, url: str, limit: int, ttl_s: int) -> list[str]:
+    cached = await redis.get(key)
+    if cached:
+        if isinstance(cached, bytes):
+            cached = cached.decode("utf-8")
+        try:
+            return json.loads(cached)
+        except json.JSONDecodeError:
+            pass  # poisoned entry; fall through and re-extract
+
+    try:
+        ids = await asyncio.to_thread(_flat_ids, url, limit)
+    except Exception as exc:  # yt-dlp raises its own hierarchy
+        raise YouTubeError(str(exc)[:200]) from exc
+
+    await redis.set(key, json.dumps(ids), ex=ttl_s)
+    return ids
+
+
+async def hydrate(redis: Redis, ids: list[str], ttl_s: int = 24 * 3600) -> list[TrackMetadata]:
+    """Metadata for a list of ids, concurrently, dropping whatever fails.
+
+    A flat listing gives ids and little else, so titles and durations have to
+    be fetched. They are cached per id, which is what keeps a repeated search
+    or a replayed radio mix free.
+    """
+    results = await asyncio.gather(
+        *(fetch_metadata(redis, youtube_id, ttl_s) for youtube_id in ids),
+        return_exceptions=True,
+    )
+
+    tracks: list[TrackMetadata] = []
+    for youtube_id, result in zip(ids, results, strict=True):
+        if isinstance(result, TrackMetadata):
+            tracks.append(result)
+        else:
+            # One dead video should not empty a page of search results.
+            logger.info("skipping %s: %s", youtube_id, result)
+    return tracks
+
+
+async def search_music(
+    redis: Redis,
+    query: str,
+    limit: int = 8,
+    ttl_s: int = 3600,
+    metadata_ttl_s: int = 24 * 3600,
+) -> list[TrackMetadata]:
+    """Search YouTube Music for songs matching ``query``."""
+    query = normalize_query(query)
+    if not query:
+        return []
+
+    url = _MUSIC_SEARCH_URL.format(query=quote(query))
+    ids = await _cached_ids(redis, _search_key(query), url, limit, ttl_s)
+    return await hydrate(redis, ids, metadata_ttl_s)
+
+
+async def radio_for(
+    redis: Redis,
+    youtube_id: str,
+    limit: int = 25,
+    ttl_s: int = 6 * 3600,
+) -> list[str]:
+    """Ids of YouTube's radio mix for a track — songs that go with this one.
+
+    Returned as bare ids: the caller filters against what the room has already
+    played before it is worth paying for metadata.
+    """
+    if not _ID_RE.match(youtube_id):
+        return []
+    url = _RADIO_URL.format(video=youtube_id)
+    ids = await _cached_ids(redis, _radio_key(youtube_id), url, limit, ttl_s)
+    # The mix always opens with the seed itself.
+    return [candidate for candidate in ids if candidate != youtube_id]
+
+
+async def playlist_ids(redis: Redis, url: str, limit: int = 100, ttl_s: int = 3600) -> list[str]:
+    """Ids behind a playlist URL, for a host-supplied fallback playlist."""
+    return await _cached_ids(redis, f"streamchen:playlist:{url}", url, limit, ttl_s)
 
 
 async def resolve_stream_url(redis: Redis, youtube_id: str, ttl_s: int = 300) -> str:

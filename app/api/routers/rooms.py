@@ -29,6 +29,7 @@ from app.schemas import (
     RoomState,
 )
 from app.service import (
+    RADIO_SESSION_ID,
     create_room,
     current_track,
     join_room,
@@ -168,7 +169,9 @@ async def listeners(
 ) -> list[ListenerRow]:
     """Host view: who is in the room and how much of the queue is theirs."""
     result = await db.execute(
-        select(Listener).where(Listener.room_id == room.id).order_by(Listener.created_at)
+        select(Listener)
+        .where(Listener.room_id == room.id, Listener.session_id != RADIO_SESSION_ID)
+        .order_by(Listener.created_at)
     )
     rows: list[ListenerRow] = []
     for listener in result.scalars().all():

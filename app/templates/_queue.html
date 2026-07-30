@@ -3,7 +3,7 @@
 {% if not queue %}
 <div class="text-center text-muted py-4">
     <i class="bi bi-music-note-list d-block mb-2" style="font-size: 2rem"></i>
-    Nothing queued. Paste a link above and the radio starts.
+    Nothing queued. Search for a song above and the radio starts.
 </div>
 {% else %}
 {% for track in queue %}
@@ -20,6 +20,8 @@
         <div class="queue-title" title="{{ track.title }}">{{ track.title }}</div>
         <div class="queue-meta">
             {{ track.duration_s | duration }} · {{ track.added_by }}
+            {% if track.radio %}<span class="badge-soft ms-2">
+                <i class="bi bi-broadcast me-1"></i>radio</span>{% endif %}
             {% if track.mine %}<span class="badge-soft badge-mine ms-2">you</span>{% endif %}
             {% if track.shadowed %}<span class="badge-soft ms-2">pending review</span>{% endif %}
         </div>

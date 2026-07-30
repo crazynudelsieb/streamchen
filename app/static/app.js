@@ -224,7 +224,7 @@
     wireAddTrack(token);
     wireCopyButtons();
     wireHostControls(token, root);
-    wireClaimHost(token);
+    wireClaimHost(token, root);
     connect(token);
   }
 
@@ -341,26 +341,142 @@
     });
   }
 
+  /* A bare id, or anything that names youtube. Everything else is a search
+   * term — the server makes the same call, this only decides which endpoint
+   * the box hits first. */
+  function looksLikeLink(value) {
+    return /^[A-Za-z0-9_-]{11}$/.test(value) ||
+      /youtu\.?be/i.test(value) ||
+      value.indexOf('://') !== -1;
+  }
+
   function wireAddTrack(token) {
     var form = document.getElementById('addTrackForm');
     if (!form) return;
 
-    form.addEventListener('submit', function (event) {
-      event.preventDefault();
-      var input = form.querySelector('input[name="url"]');
-      var button = form.querySelector('button[type="submit"]');
-      var url = (input.value || '').trim();
-      if (!url) return;
+    var input = form.querySelector('input[name="url"]');
+    var button = form.querySelector('button[type="submit"]');
+    var results = document.getElementById('searchResults');
+    var body = document.getElementById('searchResultsBody');
 
+    function closeResults() {
+      if (results) results.classList.add('d-none');
+      if (body) body.textContent = '';
+    }
+
+    var close = document.getElementById('searchClose');
+    if (close) close.addEventListener('click', closeResults);
+
+    function add(value, label) {
       button.disabled = true;
-      api('/rooms/' + token + '/tracks', { method: 'POST', body: { url: url }, token: token })
+      return api('/rooms/' + token + '/tracks', {
+        method: 'POST', body: { url: value }, token: token
+      })
         .then(function (track) {
           input.value = '';
+          closeResults();
           toast('Queued “' + track.title + '”', 'success');
           return refresh(token);
         })
-        .catch(function (error) { toast(error.message || 'Could not add that song', 'danger'); })
+        .catch(function (error) {
+          toast(error.message || 'Could not add ' + (label || 'that song'), 'danger');
+        })
         .finally(function () { button.disabled = false; });
+    }
+
+    function render(matches, query) {
+      body.textContent = '';
+      results.classList.remove('d-none');
+
+      if (!matches.length) {
+        var empty = document.createElement('p');
+        empty.className = 'text-muted small mb-0';
+        empty.textContent = 'Nothing found for “' + query + '”.';
+        body.appendChild(empty);
+        return;
+      }
+
+      matches.forEach(function (match) {
+        var row = document.createElement('div');
+        row.className = 'queue-row';
+
+        var art = document.createElement(match.thumbnail_url ? 'img' : 'div');
+        art.className = 'queue-art';
+        if (match.thumbnail_url) {
+          art.src = match.thumbnail_url;
+          art.alt = '';
+          art.loading = 'lazy';
+        }
+        row.appendChild(art);
+
+        var text = document.createElement('div');
+        text.className = 'queue-body';
+
+        var title = document.createElement('div');
+        title.className = 'queue-title';
+        title.title = match.title;
+        title.textContent = match.title;
+        text.appendChild(title);
+
+        var meta = document.createElement('div');
+        meta.className = 'queue-meta';
+        meta.textContent = formatDuration(match.duration_s) +
+          (match.channel ? ' · ' + match.channel : '');
+        text.appendChild(meta);
+        row.appendChild(text);
+
+        var actions = document.createElement('div');
+        actions.className = 'queue-actions';
+
+        // Say why up front rather than letting the add fail.
+        var blocked = match.too_long ? 'Too long' : (match.queued ? 'Queued' : null);
+        if (blocked) {
+          var note = document.createElement('span');
+          note.className = 'badge-soft';
+          note.textContent = blocked;
+          actions.appendChild(note);
+        } else {
+          var pick = document.createElement('button');
+          pick.type = 'button';
+          pick.className = 'btn btn-primary btn-sm';
+          pick.setAttribute('aria-label', 'Add ' + match.title);
+          pick.innerHTML = '<i class="bi bi-plus-lg"></i>';
+          pick.addEventListener('click', function () {
+            pick.disabled = true;
+            add(match.youtube_id, match.title).then(function () { pick.disabled = false; });
+          });
+          actions.appendChild(pick);
+        }
+
+        row.appendChild(actions);
+        body.appendChild(row);
+      });
+    }
+
+    function search(query) {
+      button.disabled = true;
+      results.classList.remove('d-none');
+      body.textContent = '';
+
+      var pending = document.createElement('p');
+      pending.className = 'text-muted small mb-0';
+      pending.textContent = 'Searching…';
+      body.appendChild(pending);
+
+      api('/rooms/' + token + '/search?q=' + encodeURIComponent(query), { token: token })
+        .then(function (matches) { render(matches || [], query); })
+        .catch(function (error) {
+          closeResults();
+          toast(error.message || 'Could not search right now', 'danger');
+        })
+        .finally(function () { button.disabled = false; });
+    }
+
+    form.addEventListener('submit', function (event) {
+      event.preventDefault();
+      var value = (input.value || '').trim();
+      if (!value) return;
+      if (looksLikeLink(value)) add(value); else search(value);
     });
   }
 
@@ -420,6 +536,8 @@
         patch({ voting_enabled: root.getAttribute('data-voting') !== '1' });
       } else if (action === 'rename') {
         patch({ name: document.getElementById('roomName').value });
+      } else if (action === 'playlist') {
+        patch({ fallback_playlist: document.getElementById('fallbackPlaylist').value });
       } else if (action === 'delete') {
         if (!window.confirm('Delete this room? The stream stops and the queue is gone.')) return;
         api('/rooms/' + token, { method: 'DELETE', token: token })
@@ -509,12 +627,17 @@
 
   /* A host arriving in a browser that still holds the key: prove it once and
    * the session carries host rights from then on. */
-  function wireClaimHost(token) {
+  function wireClaimHost(token, root) {
     var toggle = document.getElementById('claimToggle');
     var panel = document.getElementById('claimPanel');
 
+    /* Only worth reloading when the server would now render something this
+     * page does not already show. Reloading whenever the server says "host"
+     * spins forever: the stored key still proves host on the next load, which
+     * asks for another reload. */
+    var renderedAsHost = root.getAttribute('data-host') === '1';
     var stored = hostSecret(token);
-    if (stored) {
+    if (stored && !renderedAsHost) {
       api('/rooms/' + token, { token: token }).then(function (state) {
         if (state.is_host) window.location.reload();
       }).catch(function () { /* stale key; the form below still works */ });

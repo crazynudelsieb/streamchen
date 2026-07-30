@@ -80,6 +80,11 @@ class Settings:
     add_rate_limit: int = 1
     vote_rate_window_s: int = 10
     vote_rate_limit: int = 5
+    # Searching costs an upstream extraction, so it is limited harder than
+    # voting even though it changes nothing.
+    search_rate_window_s: int = 10
+    search_rate_limit: int = 4
+    search_results: int = 8
     shadow_ban_minutes: int = 15
     shadow_ban_strikes: int = 5
     strike_window_s: int = 300
@@ -161,6 +166,9 @@ class Settings:
             add_rate_limit=_int("ADD_RATE_LIMIT", 1),
             vote_rate_window_s=_int("VOTE_RATE_WINDOW_S", 10),
             vote_rate_limit=_int("VOTE_RATE_LIMIT", 5),
+            search_rate_window_s=_int("SEARCH_RATE_WINDOW_S", 10),
+            search_rate_limit=_int("SEARCH_RATE_LIMIT", 4),
+            search_results=_int("SEARCH_RESULTS", 8),
             shadow_ban_minutes=_int("SHADOW_BAN_MINUTES", 15),
             shadow_ban_strikes=_int("SHADOW_BAN_STRIKES", 5),
             metadata_cache_ttl_s=_int("METADATA_CACHE_TTL_S", 24 * 3600),
