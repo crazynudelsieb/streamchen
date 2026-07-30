@@ -16,6 +16,7 @@ can be tested directly.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -33,6 +34,17 @@ class AudioCache:
     def __post_init__(self) -> None:
         self.directory = Path(self.directory)
         self.directory.mkdir(parents=True, exist_ok=True)
+
+        # Checked here rather than at the first download: in a container the
+        # cache is a tmpfs mounted over this path, so a mismatch between the
+        # mount's owner and the container user shows up as an unreadable
+        # directory. Saying so once at startup beats a PermissionError from
+        # whichever sweep happens to touch it first.
+        if not os.access(self.directory, os.R_OK | os.W_OK | os.X_OK):
+            raise PermissionError(
+                f"audio cache {self.directory} is not readable/writable by "
+                f"uid {os.getuid()}: check the tmpfs uid/gid mount options"
+            )
 
     # --- Lookups ---------------------------------------------------------
     def find(self, key: str) -> Path | None:

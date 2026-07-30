@@ -15,8 +15,13 @@ Part of the **appchen** family, alongside
 
 - **A shared stream, not synchronised players.** Everyone is listening to one
   Icecast mount, so nobody drifts out of sync.
-- **A queue anyone can add to.** Paste a YouTube link; the room hears it when
-  its turn comes.
+- **A queue anyone can add to.** Search for a song by name or paste a YouTube
+  link; the room hears it when its turn comes. Search goes through YouTube
+  Music, so the results are songs.
+- **A radio that keeps going.** When the queue runs dry the room keeps playing:
+  from the host's fallback playlist if they set one, otherwise from YouTube's
+  mix for whatever played last. Only while somebody is listening, and always
+  behind any real request.
 - **Fair scheduling.** Round-robin across submitters: everyone's first song
   plays before anyone's second, however many they queue.
 - **Voting.** Up and down votes decide which of *your* songs plays in your
@@ -96,7 +101,7 @@ cp .env.example .env
 docker compose -f docker-compose.local.yml up --build
 ```
 
-Open <http://localhost:8080>, create a room, paste a YouTube link, press play.
+Open <http://localhost:8080>, create a room, search for a song, press play.
 
 ### Production
 

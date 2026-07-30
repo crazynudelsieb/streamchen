@@ -41,7 +41,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-RUN groupadd -r streamchen && useradd -r -g streamchen streamchen
+RUN groupadd -r -g 10001 streamchen && useradd -r -u 10001 -g streamchen streamchen
 
 COPY --from=builder /opt/venv /opt/venv
 

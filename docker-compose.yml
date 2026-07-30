@@ -83,7 +83,9 @@ services:
       # The audio cache lives in RAM-backed storage with a hard size cap, so
       # "no media is retained after playback" holds even if the worker is
       # killed mid-track (concept §12, §15).
-      - /var/cache/streamchen:size=${AUDIO_CACHE_TMPFS_SIZE:-1200m},mode=0700
+      # uid/gid must match the streamchen user in Dockerfile.worker: the tmpfs
+      # hides the image's directory, so its ownership is set here or nowhere.
+      - /var/cache/streamchen:size=${AUDIO_CACHE_TMPFS_SIZE:-1200m},mode=0700,uid=10001,gid=10001
     depends_on:
       db:
         condition: service_healthy

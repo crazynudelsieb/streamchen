@@ -71,6 +71,8 @@ class TrackOut(BaseModel):
     added_by_id: uuid.UUID
     mine: bool = False
     my_vote: int = 0
+    # Queued by autoplay rather than by a listener.
+    radio: bool = False
     # Only ever true on the submitter's own view of their own track.
     shadowed: bool = False
     created_at: datetime
@@ -105,6 +107,21 @@ class TrackAdd(BaseModel):
 
 class VoteIn(BaseModel):
     value: int = Field(ge=-1, le=1)
+
+
+class SearchResult(BaseModel):
+    """One hit from the music search, ready to be queued by id."""
+
+    youtube_id: str
+    title: str
+    duration_s: int
+    thumbnail_url: str | None = None
+    channel: str | None = None
+    # Over the room's track length limit: shown, but adding it would be
+    # rejected, so the UI says so instead of letting the listener find out.
+    too_long: bool = False
+    # Already queued or playing, which the add endpoint rejects as a duplicate.
+    queued: bool = False
 
 
 # --- Moderation -------------------------------------------------------------

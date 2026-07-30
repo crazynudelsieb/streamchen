@@ -20,7 +20,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app import events
+from app import autoplay, events
 from app.config import Settings
 from app.models import (
     STATE_FAILED,
@@ -164,9 +164,26 @@ class RoomPlayer:
     async def _tick(self) -> None:
         track = await self._claim_next_track()
         if track is None:
+            await self._autoplay()
+            track = await self._claim_next_track()
+        if track is None:
             await self._play_silence(self.settings.worker_poll_interval_s)
             return
         await self._play_track(track)
+
+    async def _autoplay(self) -> None:
+        """Let the radio pick something when nobody has requested anything.
+
+        Failing here is never fatal: silence is the same outcome as before
+        autoplay existed, and the next tick tries again.
+        """
+        try:
+            async with self.sessionmaker() as db:
+                await autoplay.top_up(db, self.redis, self.settings, self.room_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("autoplay failed in room %s", self.token)
 
     async def _claim_next_track(self) -> dict | None:
         """Take the top of the queue and mark it playing, atomically enough:

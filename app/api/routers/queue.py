@@ -22,9 +22,21 @@ from app.api.deps import (
 from app.config import Settings
 from app.models import STATE_QUEUED, Listener, Room, Track, utcnow
 from app.ratelimit import Limit, check, clear_strikes, record_strike
-from app.schemas import TrackAdd, TrackOut, VoteIn
-from app.service import is_duplicate, pending_count_for, serialize_track, set_vote
-from app.youtube import YouTubeError, fetch_metadata, parse_youtube_id
+from app.schemas import SearchResult, TrackAdd, TrackOut, VoteIn
+from app.service import (
+    is_duplicate,
+    pending_count_for,
+    queued_youtube_ids,
+    serialize_track,
+    set_vote,
+)
+from app.youtube import (
+    YouTubeError,
+    fetch_metadata,
+    normalize_query,
+    parse_youtube_id,
+    search_music,
+)
 
 router = APIRouter(tags=["queue"])
 
@@ -62,6 +74,64 @@ async def _spam_guard(
         "Slow down a moment.",
         headers={"Retry-After": str(verdict.retry_after_s)},
     )
+
+
+@router.get("/rooms/{token}/search", response_model=list[SearchResult])
+async def search(
+    q: str,
+    room: Room = Depends(require_room),
+    listener: Listener = Depends(current_listener),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+    settings: Settings = Depends(get_settings_dep),
+) -> list[SearchResult]:
+    """Find songs by name, so adding one does not require a link.
+
+    Results are annotated with the two reasons adding them would fail, because
+    a listener should not have to submit a track to discover it is nine
+    minutes long or already in the queue.
+    """
+    query = normalize_query(q)
+    if len(query) < 2:
+        return []
+
+    verdict = await check(
+        redis,
+        "search",
+        str(listener.id),
+        Limit(settings.search_rate_limit, settings.search_rate_window_s),
+    )
+    if not verdict.allowed:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Slow down a moment.",
+            headers={"Retry-After": str(verdict.retry_after_s)},
+        )
+
+    try:
+        matches = await search_music(
+            redis,
+            query,
+            limit=settings.search_results,
+            metadata_ttl_s=settings.metadata_cache_ttl_s,
+        )
+    except YouTubeError as exc:
+        raise HTTPException(HTTP_422_UNPROCESSABLE, str(exc)) from exc
+
+    taken = await queued_youtube_ids(db, room.id)
+    return [
+        SearchResult(
+            youtube_id=match.youtube_id,
+            title=match.title,
+            duration_s=match.duration_s,
+            thumbnail_url=match.thumbnail_url,
+            channel=match.channel,
+            too_long=bool(match.duration_s)
+            and match.duration_s > settings.max_track_duration_s,
+            queued=match.youtube_id in taken,
+        )
+        for match in matches
+    ]
 
 
 @router.post("/rooms/{token}/tracks", response_model=TrackOut, status_code=status.HTTP_201_CREATED)

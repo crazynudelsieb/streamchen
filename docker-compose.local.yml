@@ -40,7 +40,9 @@ services:
       - ICECAST_SOURCE_PASSWORD=hackme
       - LOG_LEVEL=DEBUG
     tmpfs:
-      - /var/cache/streamchen:size=1200m,mode=0700
+      # uid/gid must match the streamchen user in Dockerfile.worker: the tmpfs
+      # hides the image's directory, so its ownership is set here or nowhere.
+      - /var/cache/streamchen:size=1200m,mode=0700,uid=10001,gid=10001
     depends_on:
       db:
         condition: service_healthy
