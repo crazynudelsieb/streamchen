@@ -28,6 +28,30 @@
             <span>{{ track.duration_s | duration }}</span>
         </div>
     </div>
+{% elif now_playing.bulletin %}
+    {# The hourly news. Not a queue entry: nobody added it, nobody can vote on
+       it, and it is over in a few minutes (app/news.py). #}
+    {% set bulletin = now_playing.bulletin %}
+    <div class="player-art player-art-placeholder player-art-news">
+        <i class="bi bi-broadcast-pin"></i>
+    </div>
+
+    <div class="player-body" data-position="{{ now_playing.position_s }}"
+         data-duration="{{ bulletin.duration_s }}" data-title="{{ bulletin.title }}"
+         data-channel="{{ bulletin.source }}" data-art="">
+        <div class="player-title">{{ bulletin.title }}</div>
+        <div class="player-meta d-flex align-items-center gap-1 flex-wrap">
+            <span class="badge-soft"><i class="bi bi-newspaper me-1"></i>news</span>
+            {% if bulletin.source %}<span>{{ bulletin.source }}</span>{% endif %}
+            <span aria-hidden="true">·</span>
+            <span>the music is back right after this</span>
+        </div>
+        <div class="player-progress"><span id="progressBar" style="width: {{ progress_percent }}%"></span></div>
+        <div class="d-flex justify-content-between player-meta mt-1">
+            <span id="positionLabel">{{ now_playing.position_s | duration }}</span>
+            <span>{{ bulletin.duration_s | duration }}</span>
+        </div>
+    </div>
 {% else %}
     <div class="player-art player-art-placeholder"><i class="bi bi-music-note-beamed"></i></div>
     <div class="player-body">

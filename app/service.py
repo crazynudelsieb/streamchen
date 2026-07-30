@@ -358,6 +358,8 @@ def room_settings(room: Room) -> RoomSettings:
         max_pending_per_listener=room.max_pending_per_listener,
         max_listeners=room.max_listeners,
         fallback_playlist=room.fallback_playlist,
+        news_enabled=room.news_enabled,
+        news_interval_min=room.news_interval_min,
     )
 
 

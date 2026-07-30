@@ -106,6 +106,29 @@ class Settings:
     audio_prefetch_ttl_s: int = 600
     max_track_duration_s: int = 900
 
+    # --- Hourly news --------------------------------------------------
+    # A radio has news on the hour. The feed is the operator's choice and the
+    # only URL in the system nobody in a room can influence; a *host* decides
+    # whether their room plays it at all (Room.news_enabled), which is why
+    # there is no per-room feed field for a listener to point at a server.
+    news_feed_url: str = "https://podcast.orf.at/podcast/oe1/oe1_journale/oe1_journale.xml"
+    news_source_label: str = "ORF Ö1 Journale"
+    # Default cadence for a room that turns news on.
+    news_interval_min: int = 60
+    # A bulletin is an interruption of the music, so it has to be short. The Ö1
+    # feed carries both kinds — the ~9-10 minute "Journal um 5" and "Frühjournal
+    # um 6", and the 20-to-60-minute programmes — and this is what picks the
+    # short ones.
+    news_max_duration_s: int = 660
+    # How old the newest edition may be and still count as news. A feed that
+    # publishes twice a day is normal, so the same bulletin repeating through
+    # the afternoon is fine; one from the day before yesterday is not.
+    news_max_age_h: int = 24
+    # A news feed is rewritten a few times an hour at most, and every room
+    # asking it shares one answer.
+    news_feed_ttl_s: int = 600
+    news_max_bytes: int = 32 * 1024 * 1024
+
     # --- Icecast / playback -------------------------------------------
     icecast_host: str = "icecast"
     icecast_port: int = 8000
@@ -150,6 +173,12 @@ class Settings:
         return self.imprint_email or self.contact_email
 
     @property
+    def news_available(self) -> bool:
+        """Whether this instance can play news at all. Blanking the feed URL
+        takes the feature off every room's host panel."""
+        return bool(self.news_feed_url)
+
+    @property
     def stream_base_url(self) -> str:
         """Public base for Icecast mounts, used to build player URLs."""
         if self.icecast_public_url:
@@ -190,6 +219,16 @@ class Settings:
             audio_cache_budget_bytes=_int("AUDIO_CACHE_BUDGET_BYTES", 1024 * 1024 * 1024),
             audio_prefetch_ttl_s=_int("AUDIO_PREFETCH_TTL_S", 600),
             max_track_duration_s=_int("MAX_TRACK_DURATION_S", 900),
+            news_feed_url=_str(
+                "NEWS_FEED_URL",
+                "https://podcast.orf.at/podcast/oe1/oe1_journale/oe1_journale.xml",
+            ),
+            news_source_label=_str("NEWS_SOURCE_LABEL", "ORF Ö1 Journale"),
+            news_interval_min=_int("NEWS_INTERVAL_MIN", 60),
+            news_max_duration_s=_int("NEWS_MAX_DURATION_S", 660),
+            news_max_age_h=_int("NEWS_MAX_AGE_H", 24),
+            news_feed_ttl_s=_int("NEWS_FEED_TTL_S", 600),
+            news_max_bytes=_int("NEWS_MAX_BYTES", 32 * 1024 * 1024),
             icecast_host=_str("ICECAST_HOST", "icecast"),
             icecast_port=_int("ICECAST_PORT", 8000),
             icecast_source_password=_str("ICECAST_SOURCE_PASSWORD", "hackme"),

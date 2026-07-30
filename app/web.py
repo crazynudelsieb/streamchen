@@ -29,14 +29,12 @@ from app.api.deps import (
     has_host_secret,
     require_room,
 )
-from app.api.playback import playback_position
+from app.api.playback import now_playing_state
 from app.avatars import avatar_seed, cat_svg
 from app.config import Settings
 from app.contact import imprint_payload, legal_payload
 from app.models import Listener, Room
 from app.service import (
-    current_track,
-    now_playing,
     queued_tracks,
     recent_tracks,
     serialize_track,
@@ -252,9 +250,7 @@ async def _room_context(
     """Everything both the full page and its fragments render from."""
     is_host = listener.is_host or has_host_secret(request, room)
 
-    playing = await current_track(db, room.id)
-    position = await playback_position(redis, room.id, playing.id if playing else None)
-    state = now_playing(playing, listener, position)
+    state = await now_playing_state(db, redis, room.id, listener)
 
     queue = [
         serialize_track(track, listener)
@@ -272,8 +268,9 @@ async def _room_context(
     else:
         add_disabled_reason = ""
 
-    duration = state.track.duration_s if state.track else 0
-    progress = round(min(100.0, position / duration * 100), 1) if duration else 0.0
+    on_air = state.track or state.bulletin
+    duration = on_air.duration_s if on_air else 0
+    progress = round(min(100.0, state.position_s / duration * 100), 1) if duration else 0.0
 
     return {
         "room": room,
@@ -282,6 +279,10 @@ async def _room_context(
         "listeners": online,
         "now_playing": state,
         "progress_percent": progress,
+        # Whether this instance can play news at all, and what it calls its
+        # source. The host panel is rendered from these.
+        "news_available": settings.news_available,
+        "news_source": settings.news_source_label,
         "queue": queue,
         "history": history,
         "voting_enabled": room.voting_enabled,
