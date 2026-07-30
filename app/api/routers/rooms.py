@@ -19,7 +19,7 @@ from app.api.deps import (
     require_room,
 )
 from app.api.playback import now_playing_state
-from app.avatars import avatar_seed
+from app.avatars import listener_seed
 from app.config import Settings
 from app.models import Listener, Room
 from app.ratelimit import Limit, check
@@ -43,6 +43,7 @@ from app.service import (
     queued_tracks,
     recent_tracks,
     rename_listener,
+    reroll_avatar,
     room_settings,
     serialize_track,
     stream_url,
@@ -214,6 +215,44 @@ async def rename_me(
     return listener_info(listener)
 
 
+@router.post("/rooms/{token}/me/avatar", response_model=ListenerInfo)
+async def new_avatar(
+    room: Room = Depends(require_room),
+    listener: Listener = Depends(current_listener),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+    settings: Settings = Depends(get_settings_dep),
+) -> ListenerInfo:
+    """Be drawn as a different cat.
+
+    The avatar a listener starts with comes from their id, so it is the one thing
+    about themselves they cannot change by picking a name — hence a button. Like
+    the name it grants nothing and identifies nobody: the seed is random, lives
+    on the listener row for this room, and is not derived from anything.
+
+    Its own rate-limit bucket, on the name's allowance: shuffling cats should not
+    be the reason somebody cannot rename themselves.
+    """
+    verdict = await check(
+        redis,
+        "avatar",
+        str(listener.id),
+        Limit(settings.rename_rate_limit, settings.rename_rate_window_s),
+    )
+    if not verdict.allowed:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Slow down a moment.",
+            headers={"Retry-After": str(verdict.retry_after_s)},
+        )
+
+    await reroll_avatar(db, listener)
+    # Their cat is beside their name on every track they queued and in the
+    # history, so the same views go stale as after a rename.
+    await events.publish(redis, room.id, events.QUEUE_CHANGED, {})
+    return listener_info(listener)
+
+
 @router.delete("/rooms/{token}", status_code=status.HTTP_204_NO_CONTENT)
 async def destroy(
     room: Room = Depends(require_host),
@@ -249,7 +288,7 @@ async def roster(
         RosterRow(
             id=row.id,
             display_name=row.display_name,
-            avatar=avatar_seed(row.id),
+            avatar=listener_seed(row),
             is_host=row.is_host,
             is_me=row.id == listener.id,
         )
@@ -276,7 +315,7 @@ async def listeners(
             ListenerRow(
                 id=listener.id,
                 display_name=listener.display_name,
-                avatar=avatar_seed(listener.id),
+                avatar=listener_seed(listener),
                 is_host=listener.is_host,
                 online=bool(online),
                 queued=await pending_count_for(db, room.id, listener.id),

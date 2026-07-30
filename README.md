@@ -42,7 +42,8 @@ Part of the **appchen** family, alongside
   news.
 - **Chat.** A line beside the player, delivered on the socket the page already
   holds open. Kept in memory, never in the database, gone with the room.
-- **A cat.** Everyone gets one, drawn from their session on this server. No
+- **A cat.** Everyone gets one, drawn from their session on this server, and a
+  button in the name menu draws a different one for anybody who wants it. No
   avatar service, so nobody is told who is in your room.
 - **Host controls.** Skip, reorder, lock the queue, rename the room (the link
   never changes), stop the stream, turn chat off, remove listeners.
@@ -256,7 +257,7 @@ annotated list. The ones worth knowing:
 | `MAX_TRACK_DURATION_S` | `900` | Longest track accepted. |
 | `ADD_RATE_LIMIT` / `ADD_RATE_WINDOW_S` | `1` / `15` | Song submissions. |
 | `VOTE_RATE_LIMIT` / `VOTE_RATE_WINDOW_S` | `5` / `10` | Votes. |
-| `RENAME_RATE_LIMIT` / `RENAME_RATE_WINDOW_S` | `6` / `60` | Name changes. |
+| `RENAME_RATE_LIMIT` / `RENAME_RATE_WINDOW_S` | `6` / `60` | Name changes, and avatar changes on their own allowance. |
 | `CHAT_RATE_LIMIT` / `CHAT_RATE_WINDOW_S` | `6` / `10` | Chat messages. |
 | `SHADOW_BAN_MINUTES` | `15` | How long a flooder is silently muted. |
 | `AUDIO_CACHE_BUDGET_BYTES` | `1 GiB` | Hard cap on the temporary cache. |
@@ -281,7 +282,8 @@ annotated list. The ones worth knowing:
   `no-store, no-cache, must-revalidate`; only versioned static assets are
   cached, and those are immutable.
 - Chat lives in a capped Redis list and never reaches Postgres. Avatars are
-  generated from a hash of the listener's id, on this server.
+  generated on this server, from a hash of the listener's id or from a random
+  seed on their row if they asked for a different cat.
 - Idle rooms and everything in them are deleted after `ROOM_IDLE_DAYS`.
 - No CDN, no analytics, no third-party requests of any kind from the browser.
   The service worker caches the shell and the icons, and is forbidden from

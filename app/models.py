@@ -135,6 +135,11 @@ class Listener(Base):
     display_name: Mapped[str] = mapped_column(String(40))
     is_host: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Normally None, meaning "the cat your id hashes to" — which is what makes
+    # an avatar stable without storing anything. Set only when a listener asks
+    # for a different one, and then this seed is drawn instead (app/avatars.py).
+    chosen_avatar: Mapped[str | None] = mapped_column(String(32), default=None)
+
     # Set when the listener trips the spam thresholds. Their submissions still
     # appear to them and go nowhere else (concept §10).
     shadow_banned_until: Mapped[datetime | None] = mapped_column(

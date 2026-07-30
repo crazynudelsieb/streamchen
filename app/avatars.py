@@ -10,12 +10,30 @@ SVG that never leaves the instance.
 Deterministic on purpose. The same listener is the same cat on every page, in
 every browser, for as long as the room lasts — that is what makes an avatar
 worth having next to a name, and it is why the seed can be cached forever.
+
+A listener who does not like their cat may ask for another (``new_seed``), and
+that seed is then stored on their row and used instead. Still one cat per
+listener, still stable everywhere; only the way the seed was arrived at differs.
 """
 
 from __future__ import annotations
 
 import hashlib
+import secrets
 import uuid
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Type-only: drawing a cat stays free of the ORM.
+    from app.models import Listener
+
+# A random seed is the same length as a hashed one, so both kinds look alike in
+# a URL and the endpoint needs no second pattern to accept them.
+_SEED_BYTES = 6
+
+# One re-draw per attempt, and it gives up after a handful: the caller wants a
+# cat, not a guarantee.
+_REROLL_ATTEMPTS = 8
 
 # Fur, and the darker shade its markings are drawn in.
 _FUR = (
@@ -44,6 +62,15 @@ def avatar_seed(value: uuid.UUID | str) -> str:
     the room and there is no reason for it to carry a database key around.
     """
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
+
+
+def listener_seed(listener: Listener) -> str:
+    """The seed *this* listener's cat is drawn from.
+
+    The one they picked if they asked for a different cat, and otherwise the one
+    their id hashes to — which is what everybody has until they do.
+    """
+    return listener.chosen_avatar or avatar_seed(listener.id)
 
 
 def _picks(seed: str) -> list[int]:
@@ -123,4 +150,25 @@ def cat_svg(seed: str) -> str:
     return "".join(parts)
 
 
-__all__ = ["avatar_seed", "cat_svg"]
+def new_seed(unlike: str | None = None) -> str:
+    """A fresh random seed, for a listener who wants a different cat.
+
+    Random rather than the next one along: there is no order to step through and
+    nothing about the choice should be predictable from the listener's id.
+
+    ``unlike`` is the seed they are looking at now. There are only some tens of
+    thousands of distinguishable cats, so a re-roll occasionally lands on the
+    same drawing — which is indistinguishable from a button that did nothing.
+    Cheaper to notice and roll again than to explain.
+    """
+    drawing = cat_svg(unlike) if unlike else None
+
+    seed = secrets.token_hex(_SEED_BYTES)
+    for _ in range(_REROLL_ATTEMPTS):
+        if drawing is None or cat_svg(seed) != drawing:
+            return seed
+        seed = secrets.token_hex(_SEED_BYTES)
+    return seed  # rolled the same cat every time, which is nobody's real day
+
+
+__all__ = ["avatar_seed", "cat_svg", "listener_seed", "new_seed"]

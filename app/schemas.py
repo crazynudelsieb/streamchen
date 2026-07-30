@@ -66,6 +66,9 @@ class RoomCreated(BaseModel):
 class ListenerInfo(BaseModel):
     id: uuid.UUID
     display_name: str
+    # Seed for your own generated cat, so a client that just asked for a new one
+    # knows which cat to show without refetching the page.
+    avatar: str
     is_host: bool
 
 
@@ -92,6 +95,9 @@ class TrackOut(BaseModel):
     downvotes: int
     added_by: str
     added_by_id: uuid.UUID
+    # Their avatar's seed, resolved here: the submitter may have picked a cat,
+    # and an id alone can no longer say which one.
+    added_by_avatar: str
     mine: bool = False
     my_vote: int = 0
     # Queued by autoplay rather than by a listener.

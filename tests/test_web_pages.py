@@ -100,6 +100,29 @@ async def test_the_room_page_offers_to_change_your_name(client, room):
     assert 'id="nameInput"' in response.text
     # The way back to a generated name, so the first edit is not final.
     assert 'id="nameShuffle"' in response.text
+    # And the other half of who you are here: a different cat, in the same menu.
+    assert 'id="avatarShuffle"' in response.text
+
+
+async def test_the_name_menu_shows_the_cat_it_would_replace(client, room):
+    """The button is the avatar, so both it and the header show the one in use
+    -- including after a re-roll, which the page must not still be ignoring."""
+    chosen = (await client.post(f"/api/rooms/{room['token']}/me/avatar")).json()["avatar"]
+
+    response = await client.get(f"/r/{room['token']}")
+
+    assert response.text.count(f'src="/a/{chosen}.svg"') == 2
+
+
+async def test_the_queue_shows_the_cat_a_submitter_chose(client, room):
+    """The rows are rendered from a seed the server resolved, not from the
+    submitter's id -- an id can no longer say which cat is theirs."""
+    await client.post(f"/api/rooms/{room['token']}/tracks", json={"url": watch_url(1)})
+    chosen = (await client.post(f"/api/rooms/{room['token']}/me/avatar")).json()["avatar"]
+
+    fragment = await client.get(f"/r/{room['token']}/live")
+
+    assert f'src="/a/{chosen}.svg"' in fragment.text
 
 
 async def test_the_name_control_is_outside_the_swapped_region(client, room):

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app import events
+from app.avatars import avatar_seed, listener_seed, new_seed
 from app.config import Settings
 from app.models import (
     FINISHED_STATES,
@@ -212,6 +213,20 @@ async def rename_listener(db: AsyncSession, listener: Listener, name: str | None
     return listener
 
 
+async def reroll_avatar(db: AsyncSession, listener: Listener) -> Listener:
+    """Give a listener a different cat.
+
+    The one they start with is drawn from their id and cannot be changed by
+    changing anything about themselves, so wanting another one has to be a thing
+    they can ask for. Stored on the listener row, like the name: it belongs to
+    this room and travels no further (concept §14).
+    """
+    listener.chosen_avatar = new_seed(unlike=listener_seed(listener))
+    listener.last_seen_at = utcnow()
+    await db.flush()
+    return listener
+
+
 # --- Queue ------------------------------------------------------------------
 def _track_query(room_id: uuid.UUID):
     return (
@@ -365,6 +380,9 @@ def serialize_track(track: Track, viewer: Listener | None = None) -> TrackOut:
         downvotes=track.downvotes,
         added_by=track.added_by.display_name if track.added_by else "guest",
         added_by_id=track.added_by_id,
+        added_by_avatar=(
+            listener_seed(track.added_by) if track.added_by else avatar_seed(track.added_by_id)
+        ),
         mine=viewer is not None and track.added_by_id == viewer.id,
         my_vote=my_vote,
         radio=is_radio,
@@ -390,7 +408,10 @@ def room_settings(room: Room) -> RoomSettings:
 
 def listener_info(listener: Listener) -> ListenerInfo:
     return ListenerInfo(
-        id=listener.id, display_name=listener.display_name, is_host=listener.is_host
+        id=listener.id,
+        display_name=listener.display_name,
+        avatar=listener_seed(listener),
+        is_host=listener.is_host,
     )
 
 
@@ -434,6 +455,7 @@ __all__ = [
     "radio_listener",
     "recent_tracks",
     "rename_listener",
+    "reroll_avatar",
     "room_settings",
     "serialize_track",
     "set_vote",
