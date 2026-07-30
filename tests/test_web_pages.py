@@ -88,7 +88,8 @@ async def test_the_room_page_renders_the_stream_and_the_host_controls(client, ro
     assert response.status_code == 200
     assert "Test Room" in response.text
     assert f'data-stream="http://stream.test/{room["token"]}.mp3"' in response.text
-    assert 'id="hostControls"' in response.text
+    # Host controls are a button and a dialog now, not a card in the way.
+    assert 'id="hostModal"' in response.text
     assert 'id="audio"' in response.text
 
 
@@ -115,8 +116,8 @@ async def test_a_listener_gets_no_host_controls(new_client, room):
     response = await guest.get(f"/r/{room['token']}")
 
     assert response.status_code == 200
-    assert 'id="hostControls"' not in response.text
-    assert 'id="claimToggle"' in response.text
+    assert 'id="hostModal"' not in response.text
+    assert 'id="claimModal"' in response.text
 
 
 async def test_queued_songs_appear_in_the_page(client, room):

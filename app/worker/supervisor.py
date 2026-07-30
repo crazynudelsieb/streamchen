@@ -21,15 +21,32 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app import events
 from app.config import Settings
-from app.models import STATE_PLAYING, STATE_QUEUED, Room, Track, utcnow
+from app.models import Room, utcnow
 from app.service import prune_idle_rooms
 from app.worker.cache import AudioCache
 from app.worker.player import RoomPlayer
 
 logger = logging.getLogger(__name__)
 
+
+def _is_uuid(value: str) -> bool:
+    """Redis is shared and its keys are strings; a room id that is not one is
+    somebody else's key, not a room to play."""
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
+
 SWEEP_INTERVAL_S = 5
-IDLE_GRACE = timedelta(minutes=10)
+
+# How long after a room was last touched it may still get a source without
+# anybody being present. This covers the seconds between "a room was created"
+# or "a song was added" and the browser that did it registering as a listener,
+# so the mount is connected by the time somebody presses play. It is not a
+# grace period for an empty room: presence is what keeps a stream running.
+STARTUP_GRACE = timedelta(seconds=90)
+
 PRUNE_INTERVAL_S = 3600
 PRUNE_LOCK_KEY = "streamchen:prune-lock"
 
@@ -128,7 +145,17 @@ class Supervisor:
         self.cache.sweep(keep=self._protected_keys())
         await self._prune_idle_rooms()
 
-        for room in await self._rooms_needing_playback():
+        wanted = await self._rooms_needing_playback()
+
+        # A room that no longer wants a source loses it here: the last listener
+        # left, or the host stopped the stream. Encoder down, mount gone, room
+        # untouched — and the queue it had is still there when it comes back.
+        for room_id in list(self.active):
+            if room_id not in {room.id for room in wanted}:
+                logger.info("room %s no longer needs a source; releasing", room_id)
+                await self._release(room_id)
+
+        for room in wanted:
             if room.id in self.active:
                 continue
             if not await self._acquire(room.id):
@@ -160,21 +187,28 @@ class Supervisor:
             logger.info("pruned %s idle room(s)", removed)
 
     async def _rooms_needing_playback(self) -> list[Room]:
-        """A room needs a worker while it has anything queued or playing, and
-        for a grace period after, so a quiet moment does not drop the stream."""
-        cutoff = utcnow() - IDLE_GRACE
+        """The rooms that should have a source right now.
+
+        A stream follows its listeners: it runs while somebody is in the room
+        and stops when the last of them leaves, because an encoder, a decoder
+        and a download serving nobody is pure cost. The exceptions in both
+        directions are the interesting part — a room that was just created or
+        just had a song added gets a source before anybody has registered as
+        present, so that pressing play works immediately; and a room whose host
+        stopped the stream gets none however busy it is.
+        """
+        live = await events.live_room_ids(self.redis)
+        cutoff = utcnow() - STARTUP_GRACE
+
         async with self.sessionmaker() as db:
             result = await db.execute(
                 select(Room)
                 .where(
+                    Room.stream_stopped.is_(False),
                     or_(
-                        Room.id.in_(
-                            select(Track.room_id).where(
-                                Track.state.in_((STATE_QUEUED, STATE_PLAYING))
-                            )
-                        ),
+                        Room.id.in_([uuid.UUID(value) for value in live if _is_uuid(value)]),
                         Room.last_active_at >= cutoff,
-                    )
+                    ),
                 )
                 .limit(200)
             )

@@ -91,6 +91,7 @@
   var HOST_PREFIX = 'streamchen:host:';
   var RECENT_KEY = 'streamchen:recent';
   var RECENT_LIMIT = 6;
+  var VOLUME_KEY = 'streamchen:volume';
 
   function hostSecret(token) {
     try { return window.localStorage.getItem(HOST_PREFIX + token); } catch (e) { return null; }
@@ -217,16 +218,25 @@
 
     var token = root.getAttribute('data-token');
     var streamUrl = root.getAttribute('data-stream');
-    rememberRoom(token, document.querySelector('h1').textContent.trim());
+    rememberRoom(token, roomName());
 
     wirePlayer(root, streamUrl);
     wireQueueActions(token);
     wireAddTrack(token);
     wireCopyButtons();
+    wireShare();
     wireName(token);
+    wireRoomRename(token);
+    wireStreamToggle(token);
+    wireChat(token);
     wireHostControls(token, root);
     wireClaimHost(token, root);
     connect(token);
+  }
+
+  function roomName() {
+    var title = document.getElementById('roomTitle');
+    return title ? title.textContent.trim() : '';
   }
 
   // -- Your name -----------------------------------------------------------
@@ -291,6 +301,10 @@
   // -- Audio ---------------------------------------------------------------
   var ticker = null;
 
+  /* The player, once wired: how the rest of the page tells it the stream has
+   * been stopped or started without knowing anything else about it. */
+  var player = null;
+
   /* Pressing play can legitimately be early: the worker may still be
    * connecting its source, in which case the mount does not exist yet and the
    * request 404s. That is a wait, not a failure, so keep asking for a few
@@ -312,14 +326,18 @@
     var state = 'paused';
     var attempt = 0;
     var retry = null;
+    // The host stopped the stream. Different from paused: there is nothing to
+    // connect to, so trying is not a matter of pressing harder.
+    var stopped = root.getAttribute('data-stopped') === '1';
 
     function render() {
       var icons = { paused: 'play-fill', connecting: 'arrow-repeat', live: 'pause-fill' };
       var labels = { paused: 'Paused', connecting: 'Connecting…', live: 'Live' };
       icon.className = 'bi bi-' + icons[state];
       dot.classList.toggle('off', state !== 'live');
-      label.textContent = labels[state];
+      label.textContent = stopped ? 'Stream stopped' : labels[state];
       button.setAttribute('aria-label', state === 'paused' ? 'Start listening' : 'Stop listening');
+      button.disabled = stopped;
     }
 
     function stopStream() {
@@ -365,6 +383,7 @@
     }
 
     function startStream() {
+      if (stopped) return;
       if (retry !== null) { window.clearTimeout(retry); retry = null; }
       state = 'connecting';
       attempt = 0;
@@ -377,11 +396,66 @@
       if (state === 'paused') startStream(); else stopStream();
     });
 
+    /* Lock screen, headphone buttons, the car. A radio in a pocket is judged
+     * on this, and it is the whole difference between a page that plays audio
+     * and something that behaves like an app. */
+    function updateMediaSession() {
+      if (!('mediaSession' in window.navigator)) return;
+
+      var body = document.querySelector('#nowPlaying .player-body[data-title]');
+      try {
+        if (body && window.MediaMetadata) {
+          var art = body.getAttribute('data-art');
+          window.navigator.mediaSession.metadata = new window.MediaMetadata({
+            title: body.getAttribute('data-title') || 'streamchen',
+            artist: body.getAttribute('data-channel') || '',
+            album: roomName(),
+            // The same thumbnail the page is already showing, so this exposes
+            // nothing the browser had not already fetched.
+            artwork: art ? [{ src: art, sizes: '512x512', type: 'image/jpeg' }] : []
+          });
+        }
+        window.navigator.mediaSession.playbackState = state === 'live' ? 'playing' : 'paused';
+      } catch (e) { /* an older implementation; not worth a broken player */ }
+    }
+
+    if ('mediaSession' in window.navigator) {
+      try {
+        window.navigator.mediaSession.setActionHandler('play', startStream);
+        window.navigator.mediaSession.setActionHandler('pause', stopStream);
+        window.navigator.mediaSession.setActionHandler('stop', stopStream);
+      } catch (e) { /* nothing to do about it */ }
+    }
+
+    player = {
+      /* Called when the server says the stream was stopped or started —
+       * either by this host or by another one in another browser. */
+      setStopped: function (value) {
+        if (value === stopped) return;
+        stopped = value;
+        root.classList.toggle('stream-off', stopped);
+
+        var notice = document.getElementById('streamStoppedNotice');
+        if (notice) notice.classList.toggle('d-none', !stopped);
+
+        if (stopped) {
+          stopStream();
+        } else {
+          hint.classList.add('d-none');
+          render();
+        }
+      },
+      isStopped: function () { return stopped; },
+      refreshMetadata: updateMediaSession
+    };
+
     /* A live stream ending means the source went away — a worker restart, or
      * the room being handed to another one. Rejoining is almost always the
      * right answer, and the attempt cap stops it spinning on a deleted room. */
     function dropped() {
-      if (state !== 'live') return;
+      // A stopped stream has no source to rejoin; that is not a drop, it is
+      // the room being quiet on purpose.
+      if (state !== 'live' || stopped) return;
       state = 'connecting';
       attempt = 0;
       render();
@@ -390,11 +464,24 @@
 
     audio.addEventListener('ended', dropped);
     audio.addEventListener('error', dropped);
+    audio.addEventListener('playing', updateMediaSession);
+    audio.addEventListener('pause', updateMediaSession);
 
-    volume.addEventListener('input', function () { audio.volume = Number(volume.value); });
+    volume.addEventListener('input', function () {
+      audio.volume = Number(volume.value);
+      try { window.localStorage.setItem(VOLUME_KEY, volume.value); } catch (e) { /* private */ }
+    });
+
+    // Volume is a preference, not room state: it belongs to this browser.
+    try {
+      var saved = window.localStorage.getItem(VOLUME_KEY);
+      if (saved !== null) volume.value = saved;
+    } catch (e) { /* private mode */ }
     audio.volume = Number(volume.value);
 
+    root.classList.toggle('stream-off', stopped);
     render();
+    updateMediaSession();
     startTicker();
   }
 
@@ -419,6 +506,235 @@
       var label = body.querySelector('#positionLabel');
       if (label) label.textContent = formatDuration(position);
     }, 1000);
+  }
+
+  // -- Chat ----------------------------------------------------------------
+  /* Where a live chat message is delivered. Set by wireChat, read by the
+   * socket; null when the room has chat turned off. */
+  var chatSink = null;
+  var chatReload = null;
+
+  /* A socket that was down missed whatever was said meanwhile; the history
+   * endpoint is what makes that cost nothing. */
+  function reloadChat() {
+    if (chatReload) chatReload();
+  }
+
+  function wireChat(token) {
+    var log = document.getElementById('chatLog');
+    var form = document.getElementById('chatForm');
+    var input = document.getElementById('chatInput');
+    if (!log || !form || !input) return;
+
+    var empty = document.getElementById('chatEmpty');
+    // Our own message is appended the moment the POST returns, and arrives
+    // again on the socket a heartbeat later. Ids are how the second one is
+    // recognised as the same message.
+    var seen = Object.create(null);
+
+    function atBottom() {
+      return log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+    }
+
+    function timeOf(value) {
+      var when = new Date(value);
+      if (isNaN(when.getTime())) return '';
+      return when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function append(message, mine) {
+      if (!message || !message.id || seen[message.id]) return;
+      seen[message.id] = true;
+
+      // Was the reader at the bottom *before* this arrived? Deciding after
+      // would be deciding whether to follow a message by whether it exists.
+      var follow = atBottom();
+      if (empty) empty.remove();
+
+      var row = document.createElement('div');
+      row.className = 'chat-msg' + (mine ? ' mine' : '');
+
+      var art = document.createElement('img');
+      art.className = 'avatar avatar-sm';
+      art.src = '/a/' + encodeURIComponent(message.avatar || '') + '.svg';
+      art.alt = '';
+      art.width = 26;
+      art.height = 26;
+      art.loading = 'lazy';
+      row.appendChild(art);
+
+      var body = document.createElement('div');
+      body.className = 'chat-body';
+
+      var who = document.createElement('div');
+      who.className = 'chat-who';
+      var name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = message.name || 'guest';
+      who.appendChild(name);
+      var at = document.createElement('span');
+      at.textContent = timeOf(message.at);
+      who.appendChild(at);
+      body.appendChild(who);
+
+      // textContent, never innerHTML: this is the one place on the page where
+      // a listener's own words are rendered.
+      var text = document.createElement('div');
+      text.className = 'chat-text';
+      text.textContent = message.text || '';
+      body.appendChild(text);
+
+      row.appendChild(body);
+      log.appendChild(row);
+
+      if (follow) log.scrollTop = log.scrollHeight;
+    }
+
+    chatSink = function (message) { append(message, false); };
+    chatReload = function () { load(); };
+
+    function load() {
+      api('/rooms/' + token + '/chat', { token: token })
+        .then(function (messages) {
+          (messages || []).forEach(function (message) { append(message, false); });
+          log.scrollTop = log.scrollHeight;
+        })
+        .catch(function () { /* chat is the least important thing on the page */ });
+    }
+
+    form.addEventListener('submit', function (event) {
+      event.preventDefault();
+      var text = (input.value || '').trim();
+      if (!text) return;
+
+      var button = form.querySelector('button[type="submit"]');
+      button.disabled = true;
+      input.value = '';
+
+      api('/rooms/' + token + '/chat', {
+        method: 'POST', body: { text: text }, token: token
+      })
+        .then(function (message) { append(message, true); })
+        .catch(function (error) {
+          // Give it back rather than losing what they typed.
+          input.value = text;
+          toast(error.message || 'Could not send that', 'danger');
+        })
+        .finally(function () {
+          button.disabled = false;
+          input.focus();
+        });
+    });
+
+    load();
+  }
+
+  // -- The room itself -----------------------------------------------------
+  /* Renaming is a host changing the room's name and nothing else: the link is
+   * the token and is never derived from it, so every bookmark, every open tab
+   * and the stream itself survive a rename. Hence no reload. */
+  function wireRoomRename(token) {
+    var open = document.getElementById('roomRenameOpen');
+    var form = document.getElementById('roomRenameForm');
+    var input = document.getElementById('roomName');
+    var save = document.getElementById('roomRenameSave');
+    if (!open || !form || !input || !save) return;
+
+    open.addEventListener('click', function () {
+      var hidden = form.classList.toggle('d-none');
+      if (!hidden) { input.value = roomName(); input.focus(); input.select(); }
+    });
+
+    function submit() {
+      var name = (input.value || '').trim();
+      if (!name) return;
+
+      save.disabled = true;
+      api('/rooms/' + token, { method: 'PATCH', body: { name: name }, token: token })
+        .then(function (state) {
+          setRoomName(state.name);
+          rememberRoom(token, state.name);
+          form.classList.add('d-none');
+          toast('Renamed. The link is unchanged.', 'success');
+        })
+        .catch(function (error) { toast(error.message || 'Could not rename', 'danger'); })
+        .finally(function () { save.disabled = false; });
+    }
+
+    save.addEventListener('click', submit);
+    input.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') { event.preventDefault(); submit(); }
+      if (event.key === 'Escape') form.classList.add('d-none');
+    });
+  }
+
+  function setRoomName(name) {
+    var title = document.getElementById('roomTitle');
+    if (title && title.textContent !== name) title.textContent = name;
+
+    var input = document.getElementById('roomName');
+    if (input && document.activeElement !== input) input.value = name;
+
+    // The tab, and the name a PWA shows in the task switcher.
+    var suffix = document.title.indexOf('—') === -1 ? '' : document.title.split('—').pop();
+    document.title = name + (suffix ? ' —' + suffix : '');
+  }
+
+  /* Stopping the stream keeps the room: the queue, the listeners and the link
+   * are all still there, and the audio source is not. */
+  function wireStreamToggle(token) {
+    var button = document.getElementById('streamToggle');
+    if (!button) return;
+
+    button.addEventListener('click', function () {
+      var stopping = button.getAttribute('data-stopped') !== '1';
+      button.disabled = true;
+
+      api('/rooms/' + token, {
+        method: 'PATCH', body: { stream_stopped: stopping }, token: token
+      })
+        .then(function (state) {
+          setStreamStopped(state.settings.stream_stopped);
+          toast(stopping ? 'Stream stopped. The room stays.' : 'Stream starting…', 'success');
+        })
+        .catch(function (error) { toast(error.message || 'Could not do that', 'danger'); })
+        .finally(function () { button.disabled = false; });
+    });
+  }
+
+  function setStreamStopped(stopped) {
+    var root = document.getElementById('room');
+    if (root) root.setAttribute('data-stopped', stopped ? '1' : '0');
+    if (player) player.setStopped(stopped);
+
+    [document.getElementById('streamToggle'),
+     document.querySelector('[data-host-action="stream"]')].forEach(function (button) {
+      if (!button) return;
+      button.setAttribute('data-stopped', stopped ? '1' : '0');
+
+      var icon = button.querySelector('i');
+      if (icon) icon.className = 'bi bi-' + (stopped ? 'play-circle' : 'stop-circle') + ' me-1';
+
+      var label = button.querySelector('span') || button;
+      label.textContent = stopped ? 'Start stream' : 'Stop stream';
+    });
+  }
+
+  /* The share sheet where there is one: on a phone this is how a link is
+   * actually sent, and it beats "copy, open the other app, paste". */
+  function wireShare() {
+    var button = document.getElementById('shareNative');
+    var link = document.getElementById('shareLink');
+    if (!button || !link || !navigator.share) return;
+
+    button.classList.remove('d-none');
+    button.addEventListener('click', function () {
+      navigator.share({
+        title: roomName(),
+        text: 'Listen with me on ' + roomName(),
+        url: link.value
+      }).catch(function () { /* dismissed */ });
+    });
   }
 
   // -- Queue ---------------------------------------------------------------
@@ -623,22 +939,27 @@
 
   // -- Host ----------------------------------------------------------------
   function wireHostControls(token, root) {
-    var toggle = document.getElementById('hostToggle');
+    var modal = document.getElementById('hostModal');
     var panel = document.getElementById('hostPanel');
-    if (!toggle || !panel) return;
+    if (!modal || !panel) return;
 
-    toggle.addEventListener('click', function () {
-      var open = panel.classList.toggle('d-none') === false;
-      toggle.setAttribute('aria-expanded', String(open));
-      document.getElementById('hostChevron').className =
-        'bi bi-chevron-' + (open ? 'up' : 'down');
-      if (open) loadListeners(token);
-    });
+    // Who is in the room is only worth fetching while somebody is looking.
+    modal.addEventListener('show.bs.modal', function () { loadListeners(token); });
 
-    function patch(changes) {
+    /* Most settings change what the server renders — which buttons the queue
+     * has, whether the add box is disabled — so the honest answer is to let
+     * the server say. The exceptions are the ones with a live control on the
+     * page already, which update in place instead of throwing playback away. */
+    function patch(changes, reload) {
       return api('/rooms/' + token, { method: 'PATCH', body: changes, token: token })
-        .then(function () { window.location.reload(); })
-        .catch(function (error) { toast(error.message || 'Could not apply that', 'danger'); });
+        .then(function (state) {
+          if (reload === false) return state;
+          window.location.reload();
+          return state;
+        })
+        .catch(function (error) {
+          toast(error.message || 'Could not apply that', 'danger');
+        });
     }
 
     panel.addEventListener('click', function (event) {
@@ -654,10 +975,16 @@
         patch({ queue_locked: root.getAttribute('data-locked') !== '1' });
       } else if (action === 'voting') {
         patch({ voting_enabled: root.getAttribute('data-voting') !== '1' });
-      } else if (action === 'rename') {
-        patch({ name: document.getElementById('roomName').value });
+      } else if (action === 'chat') {
+        patch({ chat_enabled: root.getAttribute('data-chat') !== '1' });
+      } else if (action === 'stream') {
+        var stopping = button.getAttribute('data-stopped') !== '1';
+        patch({ stream_stopped: stopping }, false).then(function (state) {
+          if (state) setStreamStopped(state.settings.stream_stopped);
+        });
       } else if (action === 'playlist') {
-        patch({ fallback_playlist: document.getElementById('fallbackPlaylist').value });
+        patch({ fallback_playlist: document.getElementById('fallbackPlaylist').value }, false)
+          .then(function () { toast('Radio playlist saved', 'success'); });
       } else if (action === 'delete') {
         if (!window.confirm('Delete this room? The stream stops and the queue is gone.')) return;
         api('/rooms/' + token, { method: 'DELETE', token: token })
@@ -670,7 +997,7 @@
       input.addEventListener('change', function () {
         var changes = {};
         changes[input.getAttribute('data-host-setting')] = Number(input.value);
-        patch(changes);
+        patch(changes, false).then(function () { toast('Saved', 'success'); });
       });
     });
   }
@@ -693,6 +1020,14 @@
         var row = document.createElement('div');
         row.className = 'list-row';
 
+        var art = document.createElement('img');
+        art.className = 'avatar avatar-md';
+        art.src = '/a/' + encodeURIComponent(listener.avatar || '') + '.svg';
+        art.alt = '';
+        art.width = 34;
+        art.height = 34;
+        art.loading = 'lazy';
+
         var left = document.createElement('div');
         var name = document.createElement('span');
         if (!listener.online) name.className = 'text-muted';
@@ -707,7 +1042,11 @@
         meta.textContent = (listener.online ? 'online' : 'away') + ' · ' + listener.queued + ' queued';
         left.appendChild(meta);
 
-        row.appendChild(left);
+        var head = document.createElement('div');
+        head.className = 'd-flex align-items-center gap-2';
+        head.appendChild(art);
+        head.appendChild(left);
+        row.appendChild(head);
 
         if (!listener.is_host) {
           var kick = document.createElement('button');
@@ -748,9 +1087,6 @@
   /* A host arriving in a browser that still holds the key: prove it once and
    * the session carries host rights from then on. */
   function wireClaimHost(token, root) {
-    var toggle = document.getElementById('claimToggle');
-    var panel = document.getElementById('claimPanel');
-
     /* Only worth reloading when the server would now render something this
      * page does not already show. Reloading whenever the server says "host"
      * spins forever: the stored key still proves host on the next load, which
@@ -763,14 +1099,10 @@
       }).catch(function () { /* stale key; the form below still works */ });
     }
 
-    if (!toggle || !panel) return;
+    var button = document.getElementById('claimButton');
+    if (!button) return;
 
-    toggle.addEventListener('click', function () {
-      var open = panel.classList.toggle('d-none') === false;
-      toggle.setAttribute('aria-expanded', String(open));
-    });
-
-    document.getElementById('claimButton').addEventListener('click', function () {
+    button.addEventListener('click', function () {
       var secret = (document.getElementById('claimSecret').value || '').trim();
       if (!secret) return;
 
@@ -834,6 +1166,15 @@
         if (node) node.textContent = listeners;
       });
 
+      // A rename by another host, or by this one in another tab.
+      setRoomName(meta.getAttribute('data-room-name') || roomName());
+
+      // The stream may have been stopped or started by a host elsewhere.
+      setStreamStopped(meta.getAttribute('data-stream-stopped') === '1');
+
+      var root = document.getElementById('room');
+      if (root) root.setAttribute('data-chat', meta.getAttribute('data-chat-enabled'));
+
       var count = document.getElementById('queueCount');
       if (count) count.textContent = meta.getAttribute('data-queue-count');
 
@@ -855,6 +1196,7 @@
       }
     }
 
+    if (player) player.refreshMetadata();
     startTicker();
   }
 
@@ -882,15 +1224,29 @@
       socket = new WebSocket(url);
 
       socket.onopen = function () {
+        // A socket that was down missed whatever was said while it was; the
+        // room itself is refetched anyway, and chat has its own history.
+        var reconnected = attempt > 0;
         attempt = 0;
         setConnection('connected');
         ping = window.setInterval(function () { socket.send('ping'); }, 20000);
+        if (reconnected) {
+          refresh(token);
+          reloadChat();
+        }
       };
 
       socket.onmessage = function (message) {
         var event;
         try { event = JSON.parse(message.data); } catch (e) { return; }
         if (event.type === 'PONG' || event.type === 'READY') return;
+
+        // The one event that carries what happened rather than a hint to go
+        // and look: a chat line is appended, and nothing is refetched.
+        if (event.type === 'CHAT_MESSAGE') {
+          if (chatSink) chatSink(event.data);
+          return;
+        }
 
         if (event.type === 'PLAYBACK_POSITION') {
           var body = document.querySelector('#nowPlaying .player-body[data-duration]');
@@ -918,10 +1274,28 @@
     open();
   }
 
+  // ---- Installability ------------------------------------------------------
+  /* The service worker caches the shell and answers navigations when the
+   * network is gone. It deliberately never touches the API, the room page or
+   * the stream — see sw.js. Registered from the root so its scope is the whole
+   * app rather than /static. */
+  function registerServiceWorker() {
+    // Absent entirely outside a secure context, which is the whole of the
+    // check: https, localhost and 127.0.0.1 have it, plain http does not.
+    if (!('serviceWorker' in navigator)) return;
+
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('/sw.js').catch(function () {
+        /* an old browser, or a private window; the app works without it */
+      });
+    });
+  }
+
   // ---- Boot ----------------------------------------------------------------
   document.addEventListener('DOMContentLoaded', function () {
     wireMailLinks();
     wireHome();
     wireRoom();
+    registerServiceWorker();
   });
 })();

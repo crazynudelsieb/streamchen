@@ -25,6 +25,9 @@ LISTENER_JOINED = "LISTENER_JOINED"
 LISTENER_LEFT = "LISTENER_LEFT"
 ROOM_UPDATED = "ROOM_UPDATED"
 PLAYBACK_POSITION = "PLAYBACK_POSITION"
+# The one event that carries its payload rather than a hint to refetch; see
+# app/chat.py for why chat is allowed to be the exception.
+CHAT_MESSAGE = "CHAT_MESSAGE"
 
 PRESENCE_TTL_S = 60
 
@@ -43,6 +46,17 @@ def presence_key(room_id: uuid.UUID | str, session_id: str) -> str:
 
 def presence_pattern(room_id: uuid.UUID | str) -> str:
     return f"streamchen:presence:{room_id}:*"
+
+
+def room_live_key(room_id: uuid.UUID | str) -> str:
+    """One key per room saying "somebody is in here".
+
+    Redundant with the per-listener presence keys and worth it: the worker asks
+    this question about every room on every sweep, and answering it by scanning
+    for presence keys is a scan per room. This is one key to refresh and one
+    pattern to list.
+    """
+    return f"streamchen:room-live:{room_id}"
 
 
 def nowplaying_key(room_id: uuid.UUID | str) -> str:
@@ -75,11 +89,33 @@ async def mark_present(redis: Redis, room_id: uuid.UUID | str, session_id: str) 
     key = presence_key(room_id, session_id)
     was_absent = not await redis.exists(key)
     await redis.set(key, "1", ex=PRESENCE_TTL_S)
+    # Refreshed by whoever is still here, so it outlives any one listener and
+    # expires only once the room is genuinely empty.
+    await redis.set(room_live_key(room_id), "1", ex=PRESENCE_TTL_S)
     return was_absent
 
 
 async def mark_absent(redis: Redis, room_id: uuid.UUID | str, session_id: str) -> None:
+    """Drop a listener's presence.
+
+    The room-level key is left to expire rather than deleted: the person
+    leaving is not evidence that everyone has, and the last one out is covered
+    by nobody refreshing it.
+    """
     await redis.delete(presence_key(room_id, session_id))
+
+
+async def anyone_present(redis: Redis, room_id: uuid.UUID | str) -> bool:
+    return bool(await redis.exists(room_live_key(room_id)))
+
+
+async def live_room_ids(redis: Redis) -> set[str]:
+    """Every room somebody is currently in."""
+    prefix = room_live_key("")
+    return {
+        (key.decode("utf-8") if isinstance(key, bytes) else key).removeprefix(prefix)
+        async for key in redis.scan_iter(match=f"{prefix}*", count=200)
+    }
 
 
 async def count_present(redis: Redis, room_id: uuid.UUID | str) -> int:

@@ -28,6 +28,8 @@ class RoomSettingsUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=80)
     voting_enabled: bool | None = None
     queue_locked: bool | None = None
+    stream_stopped: bool | None = None
+    chat_enabled: bool | None = None
     max_pending_per_listener: int | None = Field(default=None, ge=1, le=50)
     max_listeners: int | None = Field(default=None, ge=1, le=10_000)
     fallback_playlist: str | None = Field(default=None, max_length=4000)
@@ -36,6 +38,10 @@ class RoomSettingsUpdate(BaseModel):
 class RoomSettings(BaseModel):
     voting_enabled: bool
     queue_locked: bool
+    # The host stopped the stream. The room, its queue and its link are all
+    # still here; only the audio source is gone.
+    stream_stopped: bool = False
+    chat_enabled: bool = True
     max_pending_per_listener: int
     max_listeners: int
     fallback_playlist: str | None = None
@@ -134,6 +140,22 @@ class SearchResult(BaseModel):
     queued: bool = False
 
 
+# --- Chat -------------------------------------------------------------------
+class ChatPost(BaseModel):
+    text: str = Field(min_length=1, max_length=300)
+
+
+class ChatMessage(BaseModel):
+    """One line of chat, exactly as it travels over the socket."""
+
+    id: str
+    name: str
+    # Seed for the sender's generated avatar, not an identifier.
+    avatar: str
+    text: str
+    at: str
+
+
 # --- Moderation -------------------------------------------------------------
 class BanIn(BaseModel):
     listener_id: uuid.UUID
@@ -143,6 +165,8 @@ class BanIn(BaseModel):
 class ListenerRow(BaseModel):
     id: uuid.UUID
     display_name: str
+    # Seed for their generated cat; the list is rendered client-side.
+    avatar: str
     is_host: bool
     online: bool
     queued: int

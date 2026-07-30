@@ -1,12 +1,16 @@
 {# One response, three regions. app.js pulls this on every realtime event and
    swaps each part into place, so the player, the queue and the history are
-   always from the same snapshot. #}
+   always from the same snapshot. Chat is deliberately not in here: it arrives
+   on the socket whole and is appended, so talking never costs a room refetch. #}
 <div data-region="nowplaying">{% include "_nowplaying.html" %}</div>
 <div data-region="queue">{% include "_queue.html" %}</div>
 <div data-region="history">{% include "_history.html" %}</div>
 <div data-region="meta"
      data-listeners="{{ listeners }}"
+     data-room-name="{{ room.name }}"
      data-queue-count="{{ queue|length }}"
      data-has-history="{{ '1' if history else '0' }}"
      data-add-disabled="{{ '1' if add_disabled_reason else '0' }}"
-     data-add-reason="{{ add_disabled_reason }}"></div>
+     data-add-reason="{{ add_disabled_reason }}"
+     data-stream-stopped="{{ '1' if room.stream_stopped else '0' }}"
+     data-chat-enabled="{{ '1' if room.chat_enabled else '0' }}"></div>

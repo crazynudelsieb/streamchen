@@ -19,6 +19,7 @@ from app.api.deps import (
     require_room,
 )
 from app.api.playback import playback_position
+from app.avatars import avatar_seed
 from app.config import Settings
 from app.models import Listener, Room
 from app.ratelimit import Limit, check
@@ -138,12 +139,17 @@ async def update(
     changes = payload.model_dump(exclude_unset=True)
 
     if "name" in changes and changes["name"] is not None:
+        # Renaming touches the name and nothing else. The token is the link and
+        # is never derived from the name, so a room can be renamed as often as
+        # its host likes without breaking anybody's bookmark.
         name = changes["name"].strip()[: settings.room_name_max_length]
         if name:
             room.name = name
     for field in (
         "voting_enabled",
         "queue_locked",
+        "stream_stopped",
+        "chat_enabled",
         "max_pending_per_listener",
         "max_listeners",
     ):
@@ -153,7 +159,20 @@ async def update(
         room.fallback_playlist = (changes["fallback_playlist"] or "").strip() or None
 
     await db.flush()
-    await events.publish(redis, room.id, events.ROOM_UPDATED, {"name": room.name})
+
+    if changes.get("stream_stopped") is not None:
+        # Both directions: a sweep decides who gets a source and who loses one,
+        # and it would get here within a few seconds by itself. Those are the
+        # seconds a host spends looking at the player wondering whether the
+        # button did anything.
+        await events.request_worker(redis, room.id)
+
+    await events.publish(
+        redis,
+        room.id,
+        events.ROOM_UPDATED,
+        {"name": room.name, "stream_stopped": room.stream_stopped},
+    )
     return await build_state(request, room, listener, db, redis, settings)
 
 
@@ -224,6 +243,7 @@ async def listeners(
             ListenerRow(
                 id=listener.id,
                 display_name=listener.display_name,
+                avatar=avatar_seed(listener.id),
                 is_host=listener.is_host,
                 online=bool(online),
                 queued=await pending_count_for(db, room.id, listener.id),
