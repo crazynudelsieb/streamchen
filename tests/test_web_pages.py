@@ -120,6 +120,16 @@ async def test_a_listener_gets_no_host_controls(new_client, room):
     assert 'id="claimModal"' in response.text
 
 
+async def test_the_listener_count_opens_who_is_here(new_client, room):
+    """Not a host control: everybody in the room may see who else is."""
+    guest = await new_client()
+    response = await guest.get(f"/r/{room['token']}")
+
+    assert 'data-bs-target="#listenersModal"' in response.text
+    assert 'id="listenersModal"' in response.text
+    assert 'id="roomListenerList"' in response.text
+
+
 async def test_queued_songs_appear_in_the_page(client, room):
     await client.post(f"/api/rooms/{room['token']}/tracks", json={"url": watch_url(1)})
 

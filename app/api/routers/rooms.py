@@ -31,12 +31,14 @@ from app.schemas import (
     RoomCreated,
     RoomSettingsUpdate,
     RoomState,
+    RosterRow,
 )
 from app.service import (
     RADIO_SESSION_ID,
     create_room,
     join_room,
     listener_info,
+    online_listeners,
     pending_count_for,
     queued_tracks,
     recent_tracks,
@@ -88,9 +90,10 @@ async def build_state(
     queue = await queued_tracks(db, room.id, include_shadow_for=listener.id)
     history = await recent_tracks(db, room.id)
 
-    online = await events.count_present(redis, room.id)
+    online = len(await online_listeners(db, redis, room.id))
     if online == 0:
-        # Presence has a TTL; the viewer holding this request is at least here.
+        # Presence is written just after the join, so a snapshot taken in
+        # between finds none. The viewer holding this request is at least here.
         online = 1
 
     return RoomState(
@@ -221,6 +224,37 @@ async def destroy(
     await db.delete(room)
     await events.set_now_playing(redis, room_id, None)
     await events.publish(redis, room_id, events.ROOM_UPDATED, {"deleted": True})
+
+
+@router.get("/rooms/{token}/roster", response_model=list[RosterRow])
+async def roster(
+    room: Room = Depends(require_room),
+    listener: Listener = Depends(current_listener),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+) -> list[RosterRow]:
+    """Who is listening, for anybody in the room.
+
+    The listener count in the header opens this, so it lists exactly the people
+    that count -- present, and never the radio. Unlike the host's list it says
+    nothing about queues or moderation: this is "who is here", not a panel.
+    """
+    rows = await online_listeners(db, redis, room.id)
+    if all(row.id != listener.id for row in rows):
+        # Presence is written just after the join; between the two the viewer
+        # would otherwise be missing from their own room.
+        rows.insert(0, listener)
+
+    return [
+        RosterRow(
+            id=row.id,
+            display_name=row.display_name,
+            avatar=avatar_seed(row.id),
+            is_host=row.is_host,
+            is_me=row.id == listener.id,
+        )
+        for row in rows
+    ]
 
 
 @router.get("/rooms/{token}/listeners", response_model=list[ListenerRow])

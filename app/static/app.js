@@ -229,6 +229,7 @@
     wireRoomRename(token);
     wireStreamToggle(token);
     wireChat(token);
+    wireListeners(token);
     wireHostControls(token, root);
     wireClaimHost(token, root);
     connect(token);
@@ -937,6 +938,75 @@
     }, 'Host key');
   }
 
+  // -- Who is here ---------------------------------------------------------
+  /* Reloads the roster if somebody is looking at it. Set by wireListeners,
+   * called by the socket when the room's population changes. */
+  var rosterSink = null;
+
+  /* The listener count in the header is a button, because "two listeners" is
+   * the beginning of a question. The list behind it is who is in the room right
+   * now -- not everybody who ever opened the link, which is the host's list and
+   * a different question. */
+  function wireListeners(token) {
+    var modal = document.getElementById('listenersModal');
+    var list = document.getElementById('roomListenerList');
+    if (!modal || !list) return;
+
+    function load() {
+      // No host secret: being in the room is the whole permission this needs.
+      api('/rooms/' + token + '/roster').then(function (rows) {
+        list.textContent = '';
+        rows.forEach(function (person) {
+          list.appendChild(personRow(person));
+        });
+      }).catch(function () {
+        list.textContent = '';
+        list.appendChild(note('Could not load who is here.'));
+      });
+    }
+
+    modal.addEventListener('show.bs.modal', load);
+    // Only while it is open; the count in the header updates on its own.
+    rosterSink = function () {
+      if (modal.classList.contains('show')) load();
+    };
+  }
+
+  function note(text) {
+    var node = document.createElement('p');
+    node.className = 'text-muted small mb-0';
+    node.textContent = text;
+    return node;
+  }
+
+  function personRow(person) {
+    var row = document.createElement('div');
+    row.className = 'list-row';
+
+    var art = document.createElement('img');
+    art.className = 'avatar avatar-md';
+    art.src = '/a/' + encodeURIComponent(person.avatar || '') + '.svg';
+    art.alt = '';
+    art.width = 34;
+    art.height = 34;
+    art.loading = 'lazy';
+
+    var name = document.createElement('span');
+    name.textContent = person.display_name;
+
+    var labels = document.createElement('div');
+    labels.appendChild(name);
+    if (person.is_host) labels.appendChild(badge('host'));
+    if (person.is_me) labels.appendChild(badge('you'));
+
+    var head = document.createElement('div');
+    head.className = 'd-flex align-items-center gap-2';
+    head.appendChild(art);
+    head.appendChild(labels);
+    row.appendChild(head);
+    return row;
+  }
+
   // -- Host ----------------------------------------------------------------
   function wireHostControls(token, root) {
     var modal = document.getElementById('hostModal');
@@ -1123,6 +1193,10 @@
   // -- Realtime ------------------------------------------------------------
   var refreshTimer = null;
 
+  // The server's two "do not come back" close codes (app/api/routers/ws.py).
+  var CLOSE_REMOVED = 4403;
+  var CLOSE_NO_ROOM = 4404;
+
   /* Events say "something changed", never what. Refetching the rendered
    * fragment means a missed event, a dropped socket or a cleared Redis all
    * heal on the next update. */
@@ -1167,6 +1241,8 @@
         var node = document.getElementById(id);
         if (node) node.textContent = listeners;
       });
+      var plural = document.getElementById('listenerPlural');
+      if (plural) plural.textContent = listeners === '1' ? '' : 's';
 
       // A rename by another host, or by this one in another tab.
       setRoomName(meta.getAttribute('data-room-name') || roomName());
@@ -1258,14 +1334,28 @@
           return;
         }
 
+        // Somebody arrived or left, so the open roster is now out of date.
+        if (event.type === 'LISTENER_JOINED' || event.type === 'LISTENER_LEFT') {
+          if (rosterSink) rosterSink();
+        }
+
         scheduleRefresh(token);
       };
 
       socket.onerror = function () { setConnection('error'); };
 
-      socket.onclose = function () {
+      socket.onclose = function (event) {
         if (ping !== null) { window.clearInterval(ping); ping = null; }
         setConnection('disconnected');
+
+        /* Removed from the room, or the room is gone. Reconnecting would be a
+         * loop with nothing at the end of it, and this page is now a lie:
+         * reload and let the server say so. */
+        if (event && (event.code === CLOSE_REMOVED || event.code === CLOSE_NO_ROOM)) {
+          window.location.reload();
+          return;
+        }
+
         // Back off, but keep trying: reconnecting on its own is the difference
         // between a hiccup and a dead page.
         var delay = Math.min(15000, 1000 * Math.pow(2, attempt++));

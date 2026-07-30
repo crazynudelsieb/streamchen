@@ -191,6 +191,21 @@ class ListenerRow(BaseModel):
     shadow_banned: bool
 
 
+class RosterRow(BaseModel):
+    """One person in the room, as everybody in it may see them.
+
+    Deliberately less than ``ListenerRow``: no queue counts and no moderation
+    state. A shadow-banned listener must not be able to learn that they are, and
+    that is not something to leak to the rest of the room either.
+    """
+
+    id: uuid.UUID
+    display_name: str
+    avatar: str
+    is_host: bool
+    is_me: bool
+
+
 # --- Meta -------------------------------------------------------------------
 class MetaOut(BaseModel):
     app_name: str
