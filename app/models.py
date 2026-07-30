@@ -88,6 +88,19 @@ class Room(Base):
     max_listeners: Mapped[int] = mapped_column(Integer, default=100)
     fallback_playlist: Mapped[str | None] = mapped_column(Text, default=None)
 
+    # --- News (app/news.py) ---
+    # Off unless a host asks for it: a room is music by default, and a bulletin
+    # is the one thing on the stream nobody in the room queued.
+    news_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    news_interval_min: Mapped[int] = mapped_column(Integer, default=60)
+    # When this room last heard a bulletin, and which one. The first is the
+    # cadence; the second is what stops a feed that has not moved on being
+    # played twice.
+    news_last_played_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    news_last_episode: Mapped[str | None] = mapped_column(String(200), default=None)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_active_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

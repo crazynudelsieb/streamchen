@@ -8,7 +8,8 @@
      data-locked="{{ '1' if room.queue_locked else '0' }}"
      data-voting="{{ '1' if room.voting_enabled else '0' }}"
      data-stopped="{{ '1' if room.stream_stopped else '0' }}"
-     data-chat="{{ '1' if room.chat_enabled else '0' }}">
+     data-chat="{{ '1' if room.chat_enabled else '0' }}"
+     data-news="{{ '1' if room.news_enabled else '0' }}">
 
     {# --- Header. The room's identity, and the two things that are not part
        of listening: sharing it and running it. Both are buttons rather than
@@ -320,6 +321,12 @@
                         <i class="bi bi-{{ 'play-circle' if room.stream_stopped else 'stop-circle' }} me-1"></i>
                         {{ 'Start stream' if room.stream_stopped else 'Stop stream' }}
                     </button>
+                    {% if news_available %}
+                    <button class="btn btn-outline-secondary btn-sm" data-host-action="news">
+                        <i class="bi bi-newspaper me-1"></i>
+                        {{ 'News off' if room.news_enabled else 'News on' }}
+                    </button>
+                    {% endif %}
                 </div>
 
                 <div class="row g-3 mb-3">
@@ -334,7 +341,22 @@
                         <input id="maxListeners" class="form-control" type="number" min="1" max="10000"
                                value="{{ room.max_listeners }}" data-host-setting="max_listeners">
                     </div>
+                    {% if news_available %}
+                    <div class="col-6 col-md-4">
+                        <label class="form-label small text-muted" for="newsInterval">News every (min)</label>
+                        <input id="newsInterval" class="form-control" type="number" min="15" max="720"
+                               value="{{ room.news_interval_min }}" data-host-setting="news_interval_min">
+                    </div>
+                    {% endif %}
                 </div>
+
+                {% if news_available %}
+                <div class="form-text text-muted mb-3">
+                    <i class="bi bi-newspaper me-1"></i>
+                    With news on, one short bulletin from {{ news_source }} goes out about this
+                    often — always <em>after</em> a song, never over one.
+                </div>
+                {% endif %}
 
                 <div class="mb-3">
                     <label class="form-label small text-muted" for="fallbackPlaylist">Radio playlist</label>

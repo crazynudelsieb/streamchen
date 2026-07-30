@@ -85,6 +85,65 @@ async def test_the_room_page_asks_to_be_installable(client, room):
     assert 'name="theme-color"' in page
 
 
+# --- Being offered the install ----------------------------------------------
+async def test_every_page_carries_the_install_offer(client):
+    """A button for people who go looking, and one banner for everyone else."""
+    page = (await client.get("/")).text
+
+    assert 'id="installButton"' in page
+    assert 'id="installBanner"' in page
+    assert 'id="installAccept"' in page
+    assert 'id="installDismiss"' in page
+
+
+async def test_the_install_button_starts_hidden(client):
+    """It is shown only once the browser says the app can be installed, so it is
+    never a button that does nothing."""
+    page = (await client.get("/")).text
+
+    assert 'class="btn btn-outline-secondary btn-sm d-none" type="button" id="installButton"' in page
+    assert 'class="install-banner d-none" id="installBanner"' in page
+
+
+async def test_an_installed_app_is_not_asked_to_install_again(client):
+    page = (await client.get("/")).text
+
+    assert "@media (display-mode: standalone)" in page
+    assert ".install-banner, #installButton { display: none !important; }" in page
+
+
+async def test_the_page_explains_the_install_where_a_browser_will_not_do_it(client):
+    """Safari has no install prompt to defer: adding to the home screen is
+    something the person does, so the modal says how."""
+    page = (await client.get("/")).text
+
+    assert 'id="installModal"' in page
+    assert "Add to Home Screen" in page
+    assert 'id="installStepsIos"' in page
+    assert 'id="installStepsDesktop"' in page
+
+
+async def test_the_browsers_own_install_bar_is_taken_over_rather_than_left(client):
+    source = (await client.get("/static/app.js")).text
+
+    # Kept for the button to use, instead of the browser's own unstyleable bar.
+    assert "'beforeinstallprompt'" in source
+    assert "event.preventDefault();" in source
+    assert "deferred = event;" in source
+    # And an install that happened elsewhere takes the offer away.
+    assert "'appinstalled'" in source
+
+
+async def test_not_now_is_remembered(client):
+    """The banner is an offer, not a nag: once declined it stays declined."""
+    source = (await client.get("/static/app.js")).text
+
+    assert "streamchen:install-hint" in source
+    assert "installHintSilenced" in source
+    # iPadOS reports itself as a Mac, so the touch API is what tells them apart.
+    assert "'ontouchend' in document" in source
+
+
 # --- Additive schema changes ------------------------------------------------
 @pytest.fixture
 async def sqlite_engine():

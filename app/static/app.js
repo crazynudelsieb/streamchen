@@ -977,6 +977,8 @@
         patch({ voting_enabled: root.getAttribute('data-voting') !== '1' });
       } else if (action === 'chat') {
         patch({ chat_enabled: root.getAttribute('data-chat') !== '1' });
+      } else if (action === 'news') {
+        patch({ news_enabled: root.getAttribute('data-news') !== '1' });
       } else if (action === 'stream') {
         var stopping = button.getAttribute('data-stopped') !== '1';
         patch({ stream_stopped: stopping }, false).then(function (state) {
@@ -1275,6 +1277,118 @@
   }
 
   // ---- Installability ------------------------------------------------------
+  /* "Not now" is remembered, so the banner is offered once per browser rather
+   * than on every visit. The button in the navbar stays either way: it is the
+   * answer to "where did that go?". */
+  var INSTALL_HINT_KEY = 'streamchen:install-hint';
+  var INSTALL_BANNER_DELAY_MS = 5000;
+
+  function installedAsApp() {
+    try {
+      if (window.matchMedia('(display-mode: standalone)').matches) return true;
+      if (window.matchMedia('(display-mode: minimal-ui)').matches) return true;
+    } catch (e) { /* an old browser; fall through to the iOS flag */ }
+    return window.navigator.standalone === true;
+  }
+
+  function isIos() {
+    var ua = window.navigator.userAgent || '';
+    // iPadOS 13+ calls itself a Mac; the touch API is what tells them apart.
+    return /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && 'ontouchend' in document);
+  }
+
+  function installHintSilenced() {
+    try { return window.localStorage.getItem(INSTALL_HINT_KEY) === 'off'; } catch (e) { return false; }
+  }
+
+  function silenceInstallHint() {
+    try { window.localStorage.setItem(INSTALL_HINT_KEY, 'off'); } catch (e) { /* private mode */ }
+  }
+
+  /* Two different worlds. Chromium fires beforeinstallprompt and hands us an
+   * event to keep until somebody asks; Safari has no such thing and installs
+   * from the share sheet, so there the same button explains instead of
+   * prompting. Everything below is only ever shown when one of the two applies,
+   * because a dead "Install" button is worse than none. */
+  function wireInstall() {
+    var button = document.getElementById('installButton');
+    var banner = document.getElementById('installBanner');
+    var accept = document.getElementById('installAccept');
+    var dismiss = document.getElementById('installDismiss');
+    if (!button) return;
+
+    var deferred = null;
+    var offered = false;
+
+    function hide() {
+      button.classList.add('d-none');
+      if (banner) banner.classList.add('d-none');
+    }
+
+    function showBanner() {
+      if (!banner || installedAsApp() || installHintSilenced()) return;
+      banner.classList.remove('d-none');
+    }
+
+    /* Given a moment first: an install prompt is the wrong thing to meet a
+     * listener with before they have heard anything. */
+    function offer() {
+      if (offered || installedAsApp()) return;
+      offered = true;
+      button.classList.remove('d-none');
+      if (!installHintSilenced()) window.setTimeout(showBanner, INSTALL_BANNER_DELAY_MS);
+    }
+
+    function instructions() {
+      var ios = isIos();
+      [['installStepsIntro', ios], ['installStepsIos', ios],
+       ['installStepsDesktopIntro', !ios], ['installStepsDesktop', !ios]
+      ].forEach(function (pair) {
+        var node = document.getElementById(pair[0]);
+        if (node) node.classList.toggle('d-none', !pair[1]);
+      });
+
+      var modal = document.getElementById('installModal');
+      if (modal && window.bootstrap) window.bootstrap.Modal.getOrCreateInstance(modal).show();
+    }
+
+    function install() {
+      if (banner) banner.classList.add('d-none');
+      if (!deferred) { instructions(); return; }
+
+      var event = deferred;
+      // Single use: the browser will fire beforeinstallprompt again if it still
+      // wants to offer, and prompting twice with one event throws.
+      deferred = null;
+      event.prompt();
+      var choice = event.userChoice;
+      if (!choice || !choice.then) return;
+      choice.then(function (result) {
+        if (result && result.outcome === 'accepted') { silenceInstallHint(); hide(); }
+      }).catch(function () { /* dismissed by the browser */ });
+    }
+
+    window.addEventListener('beforeinstallprompt', function (event) {
+      // Ours to decide when: the browser's own bar is not something the page
+      // can style, place or delay.
+      event.preventDefault();
+      deferred = event;
+      offer();
+    });
+
+    // Nothing to defer here; Safari's install lives in the share sheet.
+    if (isIos() && !installedAsApp()) offer();
+
+    window.addEventListener('appinstalled', function () { silenceInstallHint(); hide(); });
+
+    button.addEventListener('click', install);
+    if (accept) accept.addEventListener('click', install);
+    if (dismiss) dismiss.addEventListener('click', function () {
+      silenceInstallHint();
+      if (banner) banner.classList.add('d-none');
+    });
+  }
+
   /* The service worker caches the shell and answers navigations when the
    * network is gone. It deliberately never touches the API, the room page or
    * the stream — see sw.js. Registered from the root so its scope is the whole
@@ -1296,6 +1410,7 @@
     wireMailLinks();
     wireHome();
     wireRoom();
+    wireInstall();
     registerServiceWorker();
   });
 })();

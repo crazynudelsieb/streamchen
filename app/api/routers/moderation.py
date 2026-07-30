@@ -9,8 +9,9 @@ from redis.asyncio import Redis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import events
+from app import events, news
 from app.api.deps import get_db, get_redis, require_host
+from app.api.playback import bulletin_on_air
 from app.models import STATE_QUEUED, STATE_SKIPPED, Ban, Listener, Room, Track, utcnow
 from app.schemas import BanIn
 from app.service import current_track
@@ -32,6 +33,11 @@ async def skip(
     """
     track = await current_track(db, room.id)
     if track is None:
+        # A news bulletin is not a row anywhere, so there is nothing to mark:
+        # the event alone tells the worker to cut it, and the queue takes over.
+        if await bulletin_on_air(redis, room.id) is not None:
+            await events.publish(redis, room.id, events.SONG_SKIPPED, {"track_id": news.KIND})
+            return {"skipped": news.KIND}
         raise HTTPException(status.HTTP_409_CONFLICT, "Nothing is playing")
 
     track.state = STATE_SKIPPED

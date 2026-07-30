@@ -35,7 +35,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app import autoplay, events
+from app import autoplay, events, news
 from app.config import Settings
 from app.models import (
     STATE_FAILED,
@@ -48,7 +48,7 @@ from app.models import (
 )
 from app.service import playable_tracks
 from app.worker.cache import AudioCache
-from app.worker.download import download_audio
+from app.worker.download import download_audio, download_clip
 from app.worker.pipeline import (
     decoder_command,
     encoder_command,
@@ -79,6 +79,11 @@ SILENCE_BLOCK_S = 0.05
 # carrying, so without this the lookahead would ask a hundred times a track.
 AUTOPLAY_RETRY_S = 15.0
 
+# How long the player leaves the news feed alone after a look that produced no
+# bulletin. "Not due yet" is the answer nearly all of the time, and the answer
+# only changes with the clock.
+NEWS_RETRY_S = 120.0
+
 
 @dataclass
 class PreparedTrack:
@@ -88,6 +93,16 @@ class PreparedTrack:
     track_id: uuid.UUID
     youtube_id: str
     decoder: asyncio.subprocess.Process
+
+
+@dataclass
+class ReadyBulletin:
+    """A news bulletin whose audio is already on disk, waiting for the current
+    track to end. Never anything less than that: a bulletin still downloading
+    is not something the next boundary is allowed to wait for."""
+
+    bulletin: news.Bulletin
+    path: Path
 
 
 class Downloads:
@@ -194,11 +209,18 @@ class RoomPlayer:
         self._idle_announced = False
         self._autoplay_at = 0.0
 
+        # The hourly news bulletin: fetched while something else is on air, and
+        # played at the next track boundary (app/news.py).
+        self._news_ready: ReadyBulletin | None = None
+        self._news_task: asyncio.Task | None = None
+        self._news_key: str | None = None
+        self._news_at = 0.0
+
     @property
     def protected_keys(self) -> set[str]:
         """Files no cache sweep may take: what is playing, what is prepared,
         and what is on its way down."""
-        keys = {self.current_youtube_id, self.next_youtube_id}
+        keys = {self.current_youtube_id, self.next_youtube_id, self._news_key}
         if self._prepared is not None:
             keys.add(self._prepared.youtube_id)
         return {key for key in keys if key} | self._downloads.pending
@@ -225,6 +247,7 @@ class RoomPlayer:
                 await control
             await self._stop_lookahead()
             await self._discard_prepared()
+            await self._discard_news()
             self._downloads.abandon()
             await self._stop_encoder()
             await self._requeue_current()
@@ -253,6 +276,11 @@ class RoomPlayer:
                     self._wake.set()
                 elif event in (events.QUEUE_CHANGED, events.SONG_ADDED):
                     self._wake.set()
+                elif event == events.ROOM_UPDATED:
+                    # A setting changed, so what this player last decided about
+                    # the room's news may no longer be what its host wants. Ask
+                    # again at the next opportunity rather than in two minutes.
+                    self._news_at = 0.0
         finally:
             with contextlib.suppress(Exception):
                 await pubsub.unsubscribe(events.channel(self.room_id))
@@ -298,6 +326,16 @@ class RoomPlayer:
         # deciding must still cut the silence we are about to write.
         self._wake.clear()
 
+        # A bulletin whose audio is already on disk goes out first. This is the
+        # only place news is ever played, which is what makes "after a song,
+        # never over one" true by construction: getting here means the previous
+        # track has finished.
+        if self._news_ready is not None:
+            await self._play_bulletin()
+            return
+
+        self._request_news()
+
         track = await self._claim_next_track()
         if track is None:
             # Cold start only — during playback the lookahead has already done
@@ -336,6 +374,141 @@ class RoomPlayer:
             raise
         except Exception:
             logger.exception("autoplay failed in room %s", self.token)
+
+    # --- News ------------------------------------------------------------
+    def _news_due(self) -> bool:
+        """Whether it is worth asking about news again.
+
+        Same shape as ``_autoplay_due``: the answer changes with the clock and
+        with nothing else, so asking twice a track is already generous.
+        """
+        if not self.settings.news_available:
+            return False
+        if self._news_ready is not None:
+            return False
+        if self._news_task is not None and not self._news_task.done():
+            return False
+
+        now = time.monotonic()
+        if now - self._news_at < NEWS_RETRY_S:
+            return False
+        self._news_at = now
+        return True
+
+    def _request_news(self) -> None:
+        """Start fetching the next bulletin, in the background.
+
+        Deliberately not awaited. A download at a track boundary is a hole in
+        the broadcast of exactly its own length, so the bulletin is fetched
+        while something else is on air — a song, or the silence of an idle room
+        — and is only ever played once its file is on disk.
+        """
+        if not self._news_due():
+            return
+        self._news_task = asyncio.create_task(self._prepare_news())
+        self._news_task.add_done_callback(_retrieve_failure)
+
+    async def _prepare_news(self) -> None:
+        """Resolve the room's next bulletin and put its audio in the cache."""
+        # Streaming a bulletin to nobody would spend the room's hourly slot on
+        # an empty room, and the next listener would arrive to find it used.
+        if not await events.anyone_present(self.redis, self.room_id):
+            return
+
+        async with self.sessionmaker() as db:
+            bulletin = await news.pending(db, self.redis, self.settings, self.room_id)
+        if bulletin is None:
+            return
+
+        self._news_key = bulletin.cache_key
+        try:
+            path = await asyncio.to_thread(
+                download_clip,
+                bulletin.audio_url,
+                bulletin.cache_key,
+                self.cache.directory,
+                self.settings.news_max_bytes,
+            )
+        except asyncio.CancelledError:
+            self._news_key = None
+            raise
+        except Exception as exc:
+            # Never fatal: no news this hour is the room as it was before the
+            # feature existed, and the next look tries again.
+            self._news_key = None
+            logger.info("room %s: could not fetch the news clip (%s)", self.token, exc)
+            return
+
+        self.cache.enforce_budget(keep=self.protected_keys)
+        self._news_ready = ReadyBulletin(bulletin=bulletin, path=path)
+        logger.info("room %s: news ready (%s)", self.token, bulletin.title)
+
+    async def _play_bulletin(self) -> None:
+        """Put the prepared bulletin on air, between two songs."""
+        ready, self._news_ready = self._news_ready, None
+        bulletin = ready.bulletin
+
+        # Asked once more, now, because the clip was fetched minutes ago: a host
+        # who turned news off in the meantime gets their music.
+        async with self.sessionmaker() as db:
+            if not await news.claim(db, self.room_id, bulletin):
+                self.cache.release(bulletin.cache_key)
+                self._news_key = None
+                return
+
+        self._skip.clear()
+        self._idle_announced = False
+        self._written = 0
+        self._duration_s = bulletin.duration_s
+
+        decoder = await self._open_decoder(ready.path)
+        started = datetime.now(UTC).timestamp()
+
+        await events.set_now_playing(
+            self.redis,
+            self.room_id,
+            {
+                "kind": news.KIND,
+                # No track is playing, and no track id may ever match this.
+                "track_id": news.KIND,
+                "title": bulletin.title,
+                "source": bulletin.source,
+                "duration_s": bulletin.duration_s,
+                "started_at": started,
+            },
+        )
+        await events.publish(
+            self.redis, self.room_id, events.NEWS_STARTED, {"title": bulletin.title}
+        )
+
+        # A bulletin is minutes of airtime in which the next song can be
+        # downloaded and its decoder started, exactly like a track.
+        self._start_lookahead()
+        try:
+            await self._pump(decoder, news.KIND)
+        finally:
+            await self._close_decoder(decoder)
+            await self._stop_lookahead()
+            # Concept §12 applies to a bulletin like anything else: the audio
+            # does not survive playback.
+            self.cache.release(bulletin.cache_key)
+            self._news_key = None
+            self._duration_s = 0
+            self._written = 0
+
+    async def _discard_news(self) -> None:
+        """Let go of the bulletin, prepared or still coming, and its audio."""
+        task, self._news_task = self._news_task, None
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+        ready, self._news_ready = self._news_ready, None
+        key = self._news_key or (ready.bulletin.cache_key if ready is not None else None)
+        self._news_key = None
+        if key:
+            self.cache.release(key)
 
     async def _peek_next(self) -> dict | None:
         """What ``_claim_next_track`` would take, without taking it."""
@@ -407,7 +580,7 @@ class RoomPlayer:
 
         self._start_lookahead()
         try:
-            skipped = await self._pump(decoder, track)
+            skipped = await self._pump(decoder, str(track["id"]))
         finally:
             await self._close_decoder(decoder)
 
@@ -444,8 +617,12 @@ class RoomPlayer:
 
         return await self._open_decoder(path)
 
-    async def _pump(self, decoder: asyncio.subprocess.Process, track: dict) -> bool:
-        """Decode into the encoder. Returns True if the track was skipped."""
+    async def _pump(self, decoder: asyncio.subprocess.Process, entry_id: str) -> bool:
+        """Decode into the encoder. Returns True if it was skipped.
+
+        ``entry_id`` is what the position reports are about: a track's id, or
+        ``news.KIND`` for a bulletin, which is not a row in anything.
+        """
         last_report = time.monotonic()
         skipped = False
 
@@ -470,7 +647,7 @@ class RoomPlayer:
                     self.room_id,
                     events.PLAYBACK_POSITION,
                     {
-                        "track_id": str(track["id"]),
+                        "track_id": entry_id,
                         "position_s": round(seconds_of(self._written, self.settings), 1),
                     },
                 )
@@ -571,6 +748,10 @@ class RoomPlayer:
         """Keep the next track ready for as long as this one plays."""
         while True:
             try:
+                # News is due on the clock, so it usually comes due in the
+                # middle of a song. This is the loop that is running then, and
+                # fetching the bulletin here is what keeps it off the boundary.
+                self._request_news()
                 await self._lookahead_step()
             except asyncio.CancelledError:
                 raise

@@ -34,14 +34,22 @@ Part of the **appchen** family, alongside
   when the last listener leaves, so nothing is ever encoded for nobody. A host
   can also stop it by hand, which overrules that until they start it again —
   and stopping the stream never touches the room, the queue or the link.
+- **News on the hour, if the host wants it.** One short bulletin from a podcast
+  feed — Austrian ORF Ö1 Journale out of the box — played *after* a song and
+  never over one, then straight back to the queue. Off until a host turns it on.
+  Always the station's newest short edition, so it repeats through the day the
+  way radio news does, and stops entirely once that edition is too old to be
+  news.
 - **Chat.** A line beside the player, delivered on the socket the page already
   holds open. Kept in memory, never in the database, gone with the room.
 - **A cat.** Everyone gets one, drawn from their session on this server. No
   avatar service, so nobody is told who is in your room.
 - **Host controls.** Skip, reorder, lock the queue, rename the room (the link
   never changes), stop the stream, turn chat off, remove listeners.
-- **Installable.** A real PWA: manifest, icons, offline page, and lock-screen
-  controls through the Media Session API.
+- **Installable.** A real PWA: manifest, icons, offline page, lock-screen
+  controls through the Media Session API, and an install button that appears
+  only where the browser can actually install it (with instructions where it
+  cannot, i.e. Safari).
 - **Spam protection.** Rate limits, per-listener queue caps, and automatic,
   silent shadow bans for flooders.
 - **Nothing retained.** Audio is fetched, streamed and deleted. The only
@@ -116,6 +124,26 @@ Everything the lookahead does is a guess about a queue that votes and host
 promotions can reorder underneath it. The guess is checked against what the
 worker actually claims, so being wrong costs a cold start and can never play
 the wrong song.
+
+### How the news gets on air without interrupting anything
+
+A bulletin is audio the room did not queue, so it is the one thing that could
+plausibly cut a song off — and it never does. Two decisions make that structural
+rather than careful ([`app/news.py`](app/news.py)): the clip is *fetched* while
+something else is on air, by the same lookahead that prepares the next track,
+and it is *played* only from the top of a playback tick, which is a place the
+loop can reach only once the previous track has finished. So the worst case is a
+bulletin that waits out a long song, never one that lands in the middle of it.
+
+The rest is restraint. Only editions short enough to be a bulletin qualify, and
+one that will not say how long it is never plays. What plays is always the
+*newest* of those — heard again on the next hour if the station has not published
+since, which is what radio news is, rather than reaching further down the feed
+for something unheard and calling yesterday's bulletin today's. Once the newest
+edition is older than `NEWS_MAX_AGE_H`, nothing plays at all. Nothing is fetched
+for a room with nobody in it. And the feed URL belongs to the operator, not the
+room: a host chooses whether their room has news, never where the server fetches
+from.
 
 ### How the page stays live
 
@@ -204,6 +232,7 @@ only required variables.
 | [`app/service.py`](app/service.py) | Business logic shared by both. |
 | [`app/scheduling.py`](app/scheduling.py) | Fair queue ordering (pure functions). |
 | [`app/chat.py`](app/chat.py) | Room chat: a capped Redis list, nothing else. |
+| [`app/news.py`](app/news.py) | The hourly bulletin: feed, cadence, no repeats. |
 | [`app/avatars.py`](app/avatars.py) | The cats. |
 | [`app/worker/`](app/worker/) | Playback pipeline and the audio cache. |
 | [`app/templates/`](app/templates/) | Jinja templates; `_*.html` are fragments. |
@@ -231,6 +260,10 @@ annotated list. The ones worth knowing:
 | `CHAT_RATE_LIMIT` / `CHAT_RATE_WINDOW_S` | `6` / `10` | Chat messages. |
 | `SHADOW_BAN_MINUTES` | `15` | How long a flooder is silently muted. |
 | `AUDIO_CACHE_BUDGET_BYTES` | `1 GiB` | Hard cap on the temporary cache. |
+| `NEWS_FEED_URL` | ORF Ö1 Journale | Feed the hourly bulletin comes from; blank switches news off everywhere. |
+| `NEWS_MAX_DURATION_S` | `660` | Longest edition that counts as a bulletin. |
+| `NEWS_MAX_AGE_H` | `24` | Past this, the newest edition is no longer news and none plays. |
+| `NEWS_INTERVAL_MIN` | `60` | Default cadence for a room that turns news on. |
 | `ICECAST_BURST_SIZE` | `65536` | Sent on connect: trades start-up delay against how far behind live a listener begins. |
 | `IMPRINT_NAME` | — | Set it and `/imprint` appears in the footer. |
 

@@ -33,6 +33,10 @@ class RoomSettingsUpdate(BaseModel):
     max_pending_per_listener: int | None = Field(default=None, ge=1, le=50)
     max_listeners: int | None = Field(default=None, ge=1, le=10_000)
     fallback_playlist: str | None = Field(default=None, max_length=4000)
+    news_enabled: bool | None = None
+    # A quarter of an hour is the shortest cadence that still leaves a room
+    # mostly music; a fortnightly bulletin is somebody who wants it off.
+    news_interval_min: int | None = Field(default=None, ge=15, le=720)
 
 
 class RoomSettings(BaseModel):
@@ -45,6 +49,9 @@ class RoomSettings(BaseModel):
     max_pending_per_listener: int
     max_listeners: int
     fallback_playlist: str | None = None
+    # Hourly news (app/news.py). Off unless the host asked for it.
+    news_enabled: bool = False
+    news_interval_min: int = 60
 
 
 class RoomCreated(BaseModel):
@@ -95,8 +102,19 @@ class TrackOut(BaseModel):
     started_at: datetime | None = None
 
 
+class BulletinOut(BaseModel):
+    """The news bulletin on air, which is not a queue entry and never was: it
+    has no submitter, no votes and no row anywhere."""
+
+    title: str
+    source: str
+    duration_s: int
+
+
 class NowPlaying(BaseModel):
     track: TrackOut | None = None
+    # A bulletin plays *between* tracks, so at most one of these two is ever set.
+    bulletin: BulletinOut | None = None
     position_s: float = 0.0
     started_at: datetime | None = None
 

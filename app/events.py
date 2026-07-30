@@ -20,6 +20,9 @@ SONG_ADDED = "SONG_ADDED"
 SONG_REMOVED = "SONG_REMOVED"
 SONG_STARTED = "SONG_STARTED"
 SONG_SKIPPED = "SONG_SKIPPED"
+# A news bulletin went on air between two songs (app/news.py). Like the others,
+# only a hint: clients refetch the room and find out what is playing.
+NEWS_STARTED = "NEWS_STARTED"
 VOTE_CHANGED = "VOTE_CHANGED"
 LISTENER_JOINED = "LISTENER_JOINED"
 LISTENER_LEFT = "LISTENER_LEFT"

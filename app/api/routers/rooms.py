@@ -18,7 +18,7 @@ from app.api.deps import (
     require_host,
     require_room,
 )
-from app.api.playback import playback_position
+from app.api.playback import now_playing_state
 from app.avatars import avatar_seed
 from app.config import Settings
 from app.models import Listener, Room
@@ -35,10 +35,8 @@ from app.schemas import (
 from app.service import (
     RADIO_SESSION_ID,
     create_room,
-    current_track,
     join_room,
     listener_info,
-    now_playing,
     pending_count_for,
     queued_tracks,
     recent_tracks,
@@ -85,8 +83,7 @@ async def build_state(
     settings: Settings,
 ) -> RoomState:
     """The whole page in one object — the frontend stores none of it."""
-    playing = await current_track(db, room.id)
-    position = await playback_position(redis, room.id, playing.id if playing else None)
+    state = await now_playing_state(db, redis, room.id, listener)
 
     queue = await queued_tracks(db, room.id, include_shadow_for=listener.id)
     history = await recent_tracks(db, room.id)
@@ -104,7 +101,7 @@ async def build_state(
         me=listener_info(listener),
         is_host=listener.is_host or has_host_secret(request, room),
         listeners=online,
-        now_playing=now_playing(playing, listener, position),
+        now_playing=state,
         queue=[serialize_track(track, listener) for track in queue],
         history=[serialize_track(track, listener) for track in history],
     )
@@ -152,6 +149,8 @@ async def update(
         "chat_enabled",
         "max_pending_per_listener",
         "max_listeners",
+        "news_enabled",
+        "news_interval_min",
     ):
         if changes.get(field) is not None:
             setattr(room, field, changes[field])
