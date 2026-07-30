@@ -59,6 +59,7 @@ services:
       - ICECAST_SOURCE_PASSWORD=hackme
       - ICECAST_ADMIN_PASSWORD=hackme
       - ICECAST_HOSTNAME=localhost
+      - ICECAST_BURST_SIZE=${ICECAST_BURST_SIZE:-65536}
     ports:
       - "8000:8000"
     restart: unless-stopped

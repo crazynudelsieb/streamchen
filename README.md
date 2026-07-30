@@ -24,6 +24,9 @@ Part of the **appchen** family, alongside
   behind any real request.
 - **Fair scheduling.** Round-robin across submitters: everyone's first song
   plays before anyone's second, however many they queue.
+- **A name if you want one.** Everyone is given a generated nickname on
+  arrival, and anyone can change theirs — or ask for another one. Still no
+  account: the name lives on that room only.
 - **Voting.** Up and down votes decide which of *your* songs plays in your
   turn — they cannot buy you extra turns.
 - **Host controls.** Skip, reorder, lock the queue, remove listeners.
@@ -83,6 +86,21 @@ on stdin. Tracks are decoded into that pipe one after another, and when the
 queue is empty the worker writes silence at the same rate. The encoder reads
 with `-re`, so it consumes at exactly real time and everything upstream is
 paced by back-pressure. Listeners are never disconnected between songs.
+
+That pacing is also why transitions have to be prepared rather than performed:
+because the encoder consumes at real time, anything the worker does *between*
+two tracks — a database write, a download, starting a decoder — is a hole in
+the broadcast of exactly that length. So none of it happens there. While a
+track plays, a lookahead works out what is actually next, fetches it, and
+starts its decoder shortly before the handover, leaving the boundary itself
+with nothing to do but swap pipes. If the queue runs dry the radio is asked for
+a pick early too, so its choice is downloaded rather than discovered at the
+moment of silence.
+
+Everything the lookahead does is a guess about a queue that votes and host
+promotions can reorder underneath it. The guess is checked against what the
+worker actually claims, so being wrong costs a cold start and can never play
+the wrong song.
 
 ### How the page stays live
 
@@ -170,8 +188,10 @@ annotated list. The ones worth knowing:
 | `MAX_TRACK_DURATION_S` | `900` | Longest track accepted. |
 | `ADD_RATE_LIMIT` / `ADD_RATE_WINDOW_S` | `1` / `15` | Song submissions. |
 | `VOTE_RATE_LIMIT` / `VOTE_RATE_WINDOW_S` | `5` / `10` | Votes. |
+| `RENAME_RATE_LIMIT` / `RENAME_RATE_WINDOW_S` | `6` / `60` | Name changes. |
 | `SHADOW_BAN_MINUTES` | `15` | How long a flooder is silently muted. |
 | `AUDIO_CACHE_BUDGET_BYTES` | `1 GiB` | Hard cap on the temporary cache. |
+| `ICECAST_BURST_SIZE` | `65536` | Sent on connect: trades start-up delay against how far behind live a listener begins. |
 | `IMPRINT_NAME` | — | Set it and `/imprint` appears in the footer. |
 
 ---

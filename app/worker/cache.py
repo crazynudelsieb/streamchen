@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,6 +30,12 @@ class AudioCache:
     directory: Path
     budget_bytes: int
     ttl_s: int
+
+    # Keys nothing may delete, whoever is asking. One worker plays several
+    # rooms out of one directory, so without this a busy room's eviction can
+    # take the file the room next door is about to play — and that room then
+    # pays for the download at exactly the moment it must not.
+    protected: Callable[[], set[str]] | None = None
 
     def __post_init__(self) -> None:
         self.directory = Path(self.directory)
@@ -69,13 +75,21 @@ class AudioCache:
         for path in self.directory.glob(f"{key}.*"):
             self._unlink(path)
 
+    def _spared(self, keep: Iterable[str]) -> set[str]:
+        """What this deletion pass may not touch: the caller's own keys plus
+        every other room's current and next track."""
+        spared = set(keep)
+        if self.protected is not None:
+            spared |= self.protected()
+        return spared
+
     def sweep(self, keep: Iterable[str] = ()) -> int:
         """Delete anything past its TTL. ``keep`` is current + next.
 
         Concept §12: the current track lives until playback completes, a
         prefetched track for at most ``ttl_s``.
         """
-        protected = set(keep)
+        protected = self._spared(keep)
         cutoff = time.time() - self.ttl_s
         removed = 0
         for path in self.files():
@@ -88,7 +102,7 @@ class AudioCache:
 
     def enforce_budget(self, keep: Iterable[str] = ()) -> int:
         """Evict oldest-first until the directory fits the budget."""
-        protected = set(keep)
+        protected = self._spared(keep)
         files = sorted(self.files(), key=lambda path: path.stat().st_mtime)
         total = sum(path.stat().st_size for path in files)
         removed = 0

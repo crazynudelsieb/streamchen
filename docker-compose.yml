@@ -108,6 +108,7 @@ services:
       - ICECAST_HOSTNAME=${PUBLIC_HOST}
       - ICECAST_MAX_CLIENTS=${ICECAST_MAX_CLIENTS:-500}
       - ICECAST_MAX_SOURCES=${ICECAST_MAX_SOURCES:-50}
+      - ICECAST_BURST_SIZE=${ICECAST_BURST_SIZE:-65536}
       - TZ=${TZ:-Europe/Vienna}
     restart: unless-stopped
     labels:

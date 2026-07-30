@@ -16,10 +16,13 @@
         <header-timeout>15</header-timeout>
         <source-timeout>20</source-timeout>
         <!-- Send a burst on connect so a listener hears audio immediately
-             instead of waiting for the next buffer to fill. Kept small: it is
-             also how far behind live a new listener starts. -->
+             instead of waiting for the next buffer to fill. This is the whole
+             trade-off of how quickly play() starts: the browser needs a few
+             frames decoded before it will play anything, and at 128 kbps the
+             stream itself only delivers 16 KB a second. It is also how far
+             behind live a listener starts, so bigger is not free. -->
         <burst-on-connect>1</burst-on-connect>
-        <burst-size>32768</burst-size>
+        <burst-size>@ICECAST_BURST_SIZE@</burst-size>
     </limits>
 
     <authentication>

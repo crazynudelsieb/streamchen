@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +21,10 @@ from app.api.deps import (
 from app.api.playback import playback_position
 from app.config import Settings
 from app.models import Listener, Room
+from app.ratelimit import Limit, check
 from app.schemas import (
+    ListenerInfo,
+    ListenerRename,
     ListenerRow,
     RoomCreate,
     RoomCreated,
@@ -38,6 +41,7 @@ from app.service import (
     pending_count_for,
     queued_tracks,
     recent_tracks,
+    rename_listener,
     room_settings,
     serialize_track,
     stream_url,
@@ -50,6 +54,7 @@ router = APIRouter(tags=["rooms"])
 async def create(
     payload: RoomCreate,
     db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
     settings: Settings = Depends(get_settings_dep),
     session_id: str = Depends(get_session_id),
 ) -> RoomCreated:
@@ -59,6 +64,9 @@ async def create(
     """
     room, host_secret = await create_room(db, settings, payload.name)
     await join_room(db, room, session_id, as_host=True)
+    # The host lands on the room page in the next breath and presses play, so
+    # the source wants to be connected by then.
+    await events.request_worker(redis, room.id)
     return RoomCreated(
         token=room.token,
         name=room.name,
@@ -147,6 +155,42 @@ async def update(
     await db.flush()
     await events.publish(redis, room.id, events.ROOM_UPDATED, {"name": room.name})
     return await build_state(request, room, listener, db, redis, settings)
+
+
+@router.patch("/rooms/{token}/me", response_model=ListenerInfo)
+async def rename_me(
+    payload: ListenerRename,
+    room: Room = Depends(require_room),
+    listener: Listener = Depends(current_listener),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+    settings: Settings = Depends(get_settings_dep),
+) -> ListenerInfo:
+    """Choose your own name, or send nothing to be given another generated one.
+
+    A name is assigned on join so that nobody has to pick one to take part; this
+    only lets somebody who wants to be recognisable say so. It grants nothing —
+    host rights come from the key, and a radio pick is identified by its
+    session, so neither can be impersonated by taking their name.
+    """
+    verdict = await check(
+        redis,
+        "rename",
+        str(listener.id),
+        Limit(settings.rename_rate_limit, settings.rename_rate_window_s),
+    )
+    if not verdict.allowed:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Slow down a moment.",
+            headers={"Retry-After": str(verdict.retry_after_s)},
+        )
+
+    await rename_listener(db, listener, payload.display_name)
+    # Their name is on every track they queued and on the history, so every
+    # client's view of the room is now stale.
+    await events.publish(redis, room.id, events.QUEUE_CHANGED, {})
+    return listener_info(listener)
 
 
 @router.delete("/rooms/{token}", status_code=status.HTTP_204_NO_CONTENT)

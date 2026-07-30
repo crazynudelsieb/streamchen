@@ -28,6 +28,10 @@ PLAYBACK_POSITION = "PLAYBACK_POSITION"
 
 PRESENCE_TTL_S = 60
 
+# Not a room event: every worker listens here, and the message only means "look
+# for rooms to play now" (see ``request_worker``).
+WAKE_CHANNEL = "streamchen:worker-wake"
+
 
 def channel(room_id: uuid.UUID | str) -> str:
     return f"streamchen:room:{room_id}:events"
@@ -53,6 +57,17 @@ async def publish(redis: Redis, room_id: uuid.UUID | str, event: str, payload: A
     """Fire and forget. A room with no subscribers is the normal case."""
     message = json.dumps({"type": event, "data": payload or {}}, default=str)
     await redis.publish(channel(room_id), message)
+
+
+async def request_worker(redis: Redis, room_id: uuid.UUID | str) -> None:
+    """Ask a worker to take this room up now rather than on its next sweep.
+
+    Only a nudge: the sweep finds the room anyway, and a worker that misses the
+    message is late by one interval and no more. What it buys is that the first
+    person to open a new room finds something already connected to the mount,
+    instead of pressing play into a 404.
+    """
+    await redis.publish(WAKE_CHANNEL, str(room_id))
 
 
 async def mark_present(redis: Redis, room_id: uuid.UUID | str, session_id: str) -> bool:

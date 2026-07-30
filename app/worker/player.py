@@ -3,6 +3,19 @@
 Owns the room's Icecast source connection for as long as the room is alive,
 and pushes exactly one thing into it at a time: a track, or silence. Playback
 state lives here and nowhere else (concept §3) — the API only ever reads it.
+
+Transitions are the hard part. The encoder consumes its input at real time, so
+anything the loop does between two tracks — a database write, a yt-dlp
+download, starting a decoder — is a hole in the broadcast of exactly that
+length. So the work is moved off the boundary: while a track plays, a lookahead
+decides what is next, downloads it, and starts its decoder shortly before the
+handover, leaving the boundary itself with nothing to do but swap pipes.
+
+Everything the lookahead does is a *guess* about what the queue will look like
+when the current track ends. Votes reorder it, listeners arrive with a turn of
+their own, the host promotes something. The guess is therefore checked against
+what actually gets claimed (``_take_prepared``), so being wrong costs a cold
+start and can never play the wrong song.
 """
 
 from __future__ import annotations
@@ -13,6 +26,8 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -45,6 +60,94 @@ logger = logging.getLogger(__name__)
 
 CHUNK_BYTES = 32 * 1024
 
+# How often the lookahead re-asks the database what is coming next.
+LOOKAHEAD_POLL_S = 2.0
+
+# How close to the end of the current track the next one's decoder is started.
+# Long enough that ffmpeg has opened the file, decoded its first frames and
+# filled the pipe before we need a byte of it; short enough that a room is not
+# holding a second decoder open for the length of a whole song.
+PRESPAWN_LEAD_S = 20.0
+
+# Silence goes out in small blocks so that a track becoming ready mid-gap waits
+# for the block to drain and nothing longer.
+SILENCE_BLOCK_S = 0.05
+
+# How long the lookahead leaves the radio alone after asking it for a pick and
+# not getting one. An empty queue is the *normal* state of a room the radio is
+# carrying, so without this the lookahead would ask a hundred times a track.
+AUTOPLAY_RETRY_S = 15.0
+
+
+@dataclass
+class PreparedTrack:
+    """A queue entry whose decoder is already running and blocked on a full
+    pipe, waiting for the handover."""
+
+    track_id: uuid.UUID
+    youtube_id: str
+    decoder: asyncio.subprocess.Process
+
+
+class Downloads:
+    """One download per video id, shared by everyone who wants the file.
+
+    Both the lookahead and the playback loop ask for the next track's audio —
+    the lookahead early, the loop at the last moment if the lookahead did not
+    get there first. Two yt-dlp processes writing one path would corrupt it, so
+    the second caller waits on the first instead of starting over.
+    """
+
+    def __init__(self, cache: AudioCache) -> None:
+        self._cache = cache
+        self._tasks: dict[str, asyncio.Task[Path]] = {}
+
+    @property
+    def pending(self) -> set[str]:
+        return {key for key, task in self._tasks.items() if not task.done()}
+
+    async def fetch(self, youtube_id: str, keep: Iterable[str] = ()) -> Path:
+        """The track's file, downloading it only if nobody else already is."""
+        existing = self._cache.find(youtube_id)
+        if existing is not None:
+            return existing
+
+        task = self._tasks.get(youtube_id)
+        if task is None or task.done():
+            task = asyncio.create_task(
+                asyncio.to_thread(download_audio, youtube_id, self._cache.directory)
+            )
+            task.add_done_callback(_retrieve_failure)
+            self._tasks = {key: t for key, t in self._tasks.items() if not t.done()}
+            self._tasks[youtube_id] = task
+
+        # Shielded on purpose: the caller waiting on this may be cancelled — a
+        # skip, a lost room lock, the end of the track it was preparing for —
+        # and abandoning a download that is nearly done is how a boundary ends
+        # up paying for it twice.
+        path = await asyncio.shield(task)
+        self._cache.enforce_budget(keep=(youtube_id, *keep))
+        return path
+
+    def abandon(self) -> None:
+        """Let go of every download still in flight.
+
+        Cancelling the awaitable does not stop the thread yt-dlp runs in — that
+        is not something ``to_thread`` can offer — so a file may still land
+        after this returns. It is removed by the purge the next worker startup
+        does, which is the same guarantee a killed worker has always relied on.
+        """
+        for task in self._tasks.values():
+            task.cancel()
+        self._tasks.clear()
+
+
+def _retrieve_failure(task: asyncio.Task) -> None:
+    """A download whose only caller went away still has to have its exception
+    looked at, or asyncio complains when the task is collected."""
+    if not task.cancelled():
+        task.exception()
+
 
 class RoomPlayer:
     """Plays a single room until cancelled."""
@@ -74,12 +177,30 @@ class RoomPlayer:
 
         self._encoder: asyncio.subprocess.Process | None = None
         self._skip = asyncio.Event()
+        # "The queue changed" — cuts a silence short so the first song of a
+        # quiet room starts when it is added, not at the end of the poll.
+        self._wake = asyncio.Event()
         self._current_track_id: uuid.UUID | None = None
-        self._prefetch: asyncio.Task | None = None
+        self._downloads = Downloads(cache)
+        self._lookahead: asyncio.Task | None = None
+        self._prepared: PreparedTrack | None = None
+
+        # Progress of the current track, in bytes handed to the encoder. The
+        # encoder's pacing makes this a clock, which is how the lookahead knows
+        # how long it has left.
+        self._written = 0
+        self._duration_s = 0
+        self._idle_announced = False
+        self._autoplay_at = 0.0
 
     @property
     def protected_keys(self) -> set[str]:
-        return {key for key in (self.current_youtube_id, self.next_youtube_id) if key}
+        """Files no cache sweep may take: what is playing, what is prepared,
+        and what is on its way down."""
+        keys = {self.current_youtube_id, self.next_youtube_id}
+        if self._prepared is not None:
+            keys.add(self._prepared.youtube_id)
+        return {key for key in keys if key} | self._downloads.pending
 
     # --- Lifecycle -------------------------------------------------------
     async def run(self) -> None:
@@ -93,19 +214,24 @@ class RoomPlayer:
                     raise
                 except Exception:
                     logger.exception("playback error in room %s", self.token)
+                    await self._stop_lookahead()
+                    await self._discard_prepared()
                     await self._stop_encoder()
                     await asyncio.sleep(2)
         finally:
             control.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await control
-            await self._cancel_prefetch()
+            await self._stop_lookahead()
+            await self._discard_prepared()
+            self._downloads.abandon()
             await self._stop_encoder()
             await events.set_now_playing(self.redis, self.room_id, None)
 
     async def _watch_control(self) -> None:
-        """Listen for the host's skip. The API marks the row; this is only the
-        nudge that saves us from polling the database every second."""
+        """Listen for the host's skip and for queue changes. The API marks the
+        rows; this is only the nudge that saves us from polling the database
+        every second."""
         pubsub = self.redis.pubsub(ignore_subscribe_messages=True)
         await pubsub.subscribe(events.channel(self.room_id))
         try:
@@ -119,8 +245,12 @@ class RoomPlayer:
                     payload = json.loads(data)
                 except json.JSONDecodeError:
                     continue
-                if payload.get("type") == events.SONG_SKIPPED:
+                event = payload.get("type")
+                if event == events.SONG_SKIPPED:
                     self._skip.set()
+                    self._wake.set()
+                elif event in (events.QUEUE_CHANGED, events.SONG_ADDED):
+                    self._wake.set()
         finally:
             with contextlib.suppress(Exception):
                 await pubsub.unsubscribe(events.channel(self.room_id))
@@ -162,14 +292,34 @@ class RoomPlayer:
 
     # --- Playback --------------------------------------------------------
     async def _tick(self) -> None:
+        # Cleared before the decision, not after: a song added while we are
+        # deciding must still cut the silence we are about to write.
+        self._wake.clear()
+
         track = await self._claim_next_track()
         if track is None:
+            # Cold start only — during playback the lookahead has already done
+            # this, early enough for the pick to be downloaded in time.
             await self._autoplay()
             track = await self._claim_next_track()
         if track is None:
-            await self._play_silence(self.settings.worker_poll_interval_s)
+            await self._idle(self.settings.worker_poll_interval_s)
             return
         await self._play_track(track)
+
+    async def _idle(self, seconds: float) -> None:
+        """Nothing to play. Hold the mount open with silence so listeners are
+        not disconnected, and say so once rather than on every poll."""
+        await self._stop_lookahead()
+        await self._discard_prepared()
+        self.next_youtube_id = None
+
+        if not self._idle_announced:
+            self._idle_announced = True
+            await events.set_now_playing(self.redis, self.room_id, None)
+            await events.publish(self.redis, self.room_id, events.QUEUE_CHANGED, {})
+
+        await self._play_silence(seconds)
 
     async def _autoplay(self) -> None:
         """Let the radio pick something when nobody has requested anything.
@@ -185,6 +335,18 @@ class RoomPlayer:
         except Exception:
             logger.exception("autoplay failed in room %s", self.token)
 
+    async def _peek_next(self) -> dict | None:
+        """What ``_claim_next_track`` would take, without taking it."""
+        async with self.sessionmaker() as db:
+            tracks = await playable_tracks(db, self.room_id)
+            if not tracks:
+                return None
+            return {
+                "id": tracks[0].id,
+                "youtube_id": tracks[0].youtube_id,
+                "title": tracks[0].title,
+            }
+
     async def _claim_next_track(self) -> dict | None:
         """Take the top of the queue and mark it playing, atomically enough:
         one worker holds the room's lock, so there is no second claimant."""
@@ -198,7 +360,6 @@ class RoomPlayer:
             track.started_at = utcnow()
             await db.commit()
 
-            upcoming = tracks[1].youtube_id if len(tracks) > 1 else None
             return {
                 "id": track.id,
                 "youtube_id": track.youtube_id,
@@ -206,20 +367,18 @@ class RoomPlayer:
                 "duration_s": track.duration_s,
                 "thumbnail_url": track.thumbnail_url,
                 "channel": track.channel,
-                "next_youtube_id": upcoming,
             }
 
     async def _play_track(self, track: dict) -> None:
         self._skip.clear()
+        self._idle_announced = False
         self._current_track_id = track["id"]
         self.current_youtube_id = track["youtube_id"]
-        self.next_youtube_id = track.get("next_youtube_id")
+        self._written = 0
+        self._duration_s = track["duration_s"] or 0
 
-        try:
-            path = await self._ensure_cached(track["youtube_id"])
-        except YouTubeError as exc:
-            logger.warning("room %s: %s is unplayable (%s)", self.token, track["title"], exc)
-            await self._finish(track["id"], STATE_FAILED, str(exc))
+        decoder = await self._decoder_for(track)
+        if decoder is None:
             return
 
         started = datetime.now(UTC).timestamp()
@@ -244,72 +403,88 @@ class RoomPlayer:
         )
         await events.publish(self.redis, self.room_id, events.QUEUE_CHANGED, {})
 
-        # Prepare the next track while this one plays: current + next, never
-        # more (concept §11).
-        self._start_prefetch(track.get("next_youtube_id"), keep=track["youtube_id"])
+        self._start_lookahead()
+        try:
+            skipped = await self._pump(decoder, track)
+        finally:
+            await self._close_decoder(decoder)
 
-        skipped = await self._pump(path, track)
-
-        await self._cancel_prefetch()
+        # Stops the loop, not the download it may have in flight: that is
+        # shielded, and the next tick waits on the same task rather than
+        # starting the fetch again from nothing.
+        await self._stop_lookahead()
         self.cache.release(track["youtube_id"])
         await self._finish(track["id"], STATE_SKIPPED if skipped else STATE_PLAYED)
-        await events.set_now_playing(self.redis, self.room_id, None)
-        await events.publish(self.redis, self.room_id, events.QUEUE_CHANGED, {})
+        # Deliberately no event here. The next track's SONG_STARTED covers this
+        # one ending, which means no client ever refetches the room during the
+        # handover — and so never renders the moment where nothing is playing.
         self._current_track_id = None
         self.current_youtube_id = None
 
-    async def _pump(self, path: Path, track: dict) -> bool:
-        """Decode into the encoder. Returns True if the track was skipped."""
-        decoder = await asyncio.create_subprocess_exec(
-            *decoder_command(self.settings, str(path)),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
+    async def _decoder_for(self, track: dict) -> asyncio.subprocess.Process | None:
+        """The running decoder for a claimed track, or None if it is unplayable.
 
-        written = 0
+        Normally this is the process the lookahead already started, in which
+        case there is nothing to wait for at all.
+        """
+        prepared = await self._take_prepared(track["id"])
+        if prepared is not None:
+            return prepared.decoder
+
+        try:
+            path = await self._downloads.fetch(track["youtube_id"], keep=self.protected_keys)
+        except YouTubeError as exc:
+            logger.warning("room %s: %s is unplayable (%s)", self.token, track["title"], exc)
+            await self._finish(track["id"], STATE_FAILED, str(exc))
+            self._current_track_id = None
+            self.current_youtube_id = None
+            return None
+
+        return await self._open_decoder(path)
+
+    async def _pump(self, decoder: asyncio.subprocess.Process, track: dict) -> bool:
+        """Decode into the encoder. Returns True if the track was skipped."""
         last_report = time.monotonic()
         skipped = False
 
-        try:
-            assert decoder.stdout is not None
-            while True:
-                if self._skip.is_set():
-                    skipped = True
-                    break
+        assert decoder.stdout is not None
+        while True:
+            if self._skip.is_set():
+                skipped = True
+                break
 
-                chunk = await decoder.stdout.read(CHUNK_BYTES)
-                if not chunk:
-                    break
+            chunk = await decoder.stdout.read(CHUNK_BYTES)
+            if not chunk:
+                break
 
-                await self._write(chunk)
-                written += len(chunk)
+            await self._write(chunk)
+            self._written += len(chunk)
 
-                now = time.monotonic()
-                if now - last_report >= 5:
-                    last_report = now
-                    await events.publish(
-                        self.redis,
-                        self.room_id,
-                        events.PLAYBACK_POSITION,
-                        {
-                            "track_id": str(track["id"]),
-                            "position_s": round(seconds_of(written, self.settings), 1),
-                        },
-                    )
-        finally:
-            with contextlib.suppress(ProcessLookupError):
-                decoder.terminate()
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(decoder.wait(), timeout=5)
+            now = time.monotonic()
+            if now - last_report >= 5:
+                last_report = now
+                await events.publish(
+                    self.redis,
+                    self.room_id,
+                    events.PLAYBACK_POSITION,
+                    {
+                        "track_id": str(track["id"]),
+                        "position_s": round(seconds_of(self._written, self.settings), 1),
+                    },
+                )
 
         return skipped
 
     async def _play_silence(self, seconds: float) -> None:
         """Keeps the mount connected between songs so listeners are not
         disconnected by an empty queue."""
-        chunk = silence_chunk(self.settings, 0.25)
+        chunk = silence_chunk(self.settings, SILENCE_BLOCK_S)
         deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
+        # One block unconditionally: a wake arriving just before this would
+        # otherwise let the idle loop go round without feeding the encoder at
+        # all, and the encoder starving is the thing being avoided here.
+        await self._write(chunk)
+        while time.monotonic() < deadline and not self._wake.is_set():
             await self._write(chunk)
 
     async def _finish(self, track_id: uuid.UUID, state: str, error: str | None = None) -> None:
@@ -326,36 +501,123 @@ class RoomPlayer:
                 track.error = error[:200]
             await db.commit()
 
-    # --- Cache -----------------------------------------------------------
-    async def _ensure_cached(self, youtube_id: str) -> Path:
-        existing = self.cache.find(youtube_id)
-        if existing is not None:
-            return existing
+    # --- Decoders --------------------------------------------------------
+    async def _open_decoder(self, path: Path) -> asyncio.subprocess.Process:
+        return await asyncio.create_subprocess_exec(
+            *decoder_command(self.settings, str(path)),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
 
-        path = await asyncio.to_thread(download_audio, youtube_id, self.cache.directory)
-        self.cache.enforce_budget(keep=(youtube_id,))
-        return path
+    async def _close_decoder(self, decoder: asyncio.subprocess.Process) -> None:
+        with contextlib.suppress(ProcessLookupError):
+            decoder.terminate()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(decoder.wait(), timeout=5)
 
-    def _start_prefetch(self, youtube_id: str | None, keep: str) -> None:
-        if not youtube_id or self.cache.has(youtube_id):
+    # --- Lookahead -------------------------------------------------------
+    def _remaining_s(self) -> float:
+        """How much of the current track is still to be written. A track whose
+        duration we do not know counts as about to end, which costs nothing but
+        an early decoder."""
+        if self._duration_s <= 0:
+            return 0.0
+        return max(0.0, self._duration_s - seconds_of(self._written, self.settings))
+
+    def _start_lookahead(self) -> None:
+        if self._lookahead is not None and not self._lookahead.done():
             return
+        self._lookahead = asyncio.create_task(self._lookahead_loop())
 
-        async def _prefetch() -> None:
-            try:
-                await asyncio.to_thread(download_audio, youtube_id, self.cache.directory)
-                self.cache.enforce_budget(keep=(keep, youtube_id))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                # Not fatal: the track is downloaded again when its turn comes.
-                logger.info("room %s: prefetch of %s failed (%s)", self.token, youtube_id, exc)
-
-        self._prefetch = asyncio.create_task(_prefetch())
-
-    async def _cancel_prefetch(self) -> None:
-        task, self._prefetch = self._prefetch, None
+    async def _stop_lookahead(self) -> None:
+        """Stop looking ahead. Anything already prepared is left alone — that is
+        the whole point of having prepared it."""
+        task, self._lookahead = self._lookahead, None
         if task is None:
             return
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
+
+    async def _lookahead_loop(self) -> None:
+        """Keep the next track ready for as long as this one plays."""
+        while True:
+            try:
+                await self._lookahead_step()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Never fatal: the boundary falls back to fetching the track
+                # itself, which is what used to happen every time.
+                logger.exception("lookahead failed in room %s", self.token)
+            await asyncio.sleep(LOOKAHEAD_POLL_S)
+
+    def _autoplay_due(self) -> bool:
+        """Whether it is worth asking the radio again. Its answer only changes
+        when the room's history does, so polling it is pure waste."""
+        now = time.monotonic()
+        if now - self._autoplay_at < AUTOPLAY_RETRY_S:
+            return False
+        self._autoplay_at = now
+        return True
+
+    async def _lookahead_step(self) -> None:
+        upcoming = await self._peek_next()
+        if upcoming is None and self._autoplay_due():
+            # Top up while there is still audio playing, so the radio's mix
+            # lookup and the download both happen off the critical path. This
+            # is the difference between the radio carrying a room seamlessly
+            # and it stalling for a few seconds at every handover.
+            await self._autoplay()
+            upcoming = await self._peek_next()
+
+        if upcoming is None:
+            self.next_youtube_id = None
+            await self._discard_prepared()
+            return
+
+        # Reordered under us: what we warmed up is not what is next any more.
+        if self._prepared is not None and self._prepared.track_id != upcoming["id"]:
+            await self._discard_prepared()
+
+        self.next_youtube_id = upcoming["youtube_id"]
+
+        if not self.cache.has(upcoming["youtube_id"]):
+            try:
+                await self._downloads.fetch(upcoming["youtube_id"], keep=self.protected_keys)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Not fatal: the track is fetched again when its turn comes.
+                logger.info(
+                    "room %s: could not prefetch %s (%s)", self.token, upcoming["title"], exc
+                )
+            return
+
+        if self._prepared is None and self._remaining_s() <= PRESPAWN_LEAD_S:
+            path = self.cache.find(upcoming["youtube_id"])
+            if path is not None:
+                self._prepared = PreparedTrack(
+                    track_id=upcoming["id"],
+                    youtube_id=upcoming["youtube_id"],
+                    decoder=await self._open_decoder(path),
+                )
+
+    async def _take_prepared(self, track_id: uuid.UUID) -> PreparedTrack | None:
+        """The warmed-up decoder, but only for the track that was claimed.
+
+        This is where the lookahead's guess is checked against reality, and the
+        reason a reorder can only ever cost a cold start.
+        """
+        prepared, self._prepared = self._prepared, None
+        if prepared is None:
+            return None
+        if prepared.track_id == track_id:
+            return prepared
+        await self._close_decoder(prepared.decoder)
+        return None
+
+    async def _discard_prepared(self) -> None:
+        prepared, self._prepared = self._prepared, None
+        if prepared is not None:
+            await self._close_decoder(prepared.decoder)

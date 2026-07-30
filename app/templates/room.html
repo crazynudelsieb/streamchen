@@ -15,8 +15,29 @@
                     <div class="text-muted small">
                         <span id="listenerCount">{{ listeners }}</span>
                         listener{{ '' if listeners == 1 else 's' }} ·
-                        you are {{ me.display_name }}
+                        you are
+                        {# A name is given on join; this only lets you override it. #}
+                        <button type="button" class="btn btn-link btn-sm p-0 align-baseline"
+                                id="nameEdit" aria-expanded="false"
+                                aria-label="Change your name">
+                            <span id="myName">{{ me.display_name }}</span><i
+                                class="bi bi-pencil ms-1"></i>
+                        </button>
                         {% if is_host %}<span class="badge-soft badge-mine ms-2">host</span>{% endif %}
+                    </div>
+                    <div class="input-group input-group-sm mt-2 d-none" id="nameForm"
+                         style="max-width: 20rem">
+                        <input class="form-control" id="nameInput" maxlength="40"
+                               value="{{ me.display_name }}" autocomplete="off"
+                               aria-label="Your name in this room">
+                        <button class="btn btn-outline-secondary" type="button" id="nameShuffle"
+                                aria-label="Give me another generated name">
+                            <i class="bi bi-shuffle"></i>
+                        </button>
+                        <button class="btn btn-outline-secondary" type="button" id="nameSave"
+                                aria-label="Save your name">
+                            <i class="bi bi-check-lg"></i>
+                        </button>
                     </div>
                 </div>
             </div>
@@ -54,8 +75,9 @@
                     </div>
 
                     <div class="alert alert-warning mt-3 mb-0 py-2 small d-none" id="playbackHint">
-                        The stream did not start. If the queue is empty the radio has nothing to
-                        broadcast yet — add a song and press play again.
+                        Still nothing on the stream after a few tries. If your browser blocked
+                        playback, press play again; otherwise the room has no source yet — add a
+                        song and give it a moment.
                     </div>
 
                     <audio id="audio" preload="none"></audio>
