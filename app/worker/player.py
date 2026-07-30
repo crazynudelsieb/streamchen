@@ -207,14 +207,20 @@ class RoomPlayer:
         self._written = 0
         self._duration_s = 0
         self._idle_announced = False
-        self._autoplay_at = 0.0
+
+        # When each of these was last asked, on the monotonic clock. None means
+        # never — and it has to, because that clock counts from an arbitrary
+        # point (on Linux, boot), so 0.0 does not mean "long ago", it means "at
+        # boot", which on a machine that came up a minute ago is inside every
+        # retry window.
+        self._autoplay_at: float | None = None
+        self._news_at: float | None = None
 
         # The hourly news bulletin: fetched while something else is on air, and
         # played at the next track boundary (app/news.py).
         self._news_ready: ReadyBulletin | None = None
         self._news_task: asyncio.Task | None = None
         self._news_key: str | None = None
-        self._news_at = 0.0
 
     @property
     def protected_keys(self) -> set[str]:
@@ -280,7 +286,7 @@ class RoomPlayer:
                     # A setting changed, so what this player last decided about
                     # the room's news may no longer be what its host wants. Ask
                     # again at the next opportunity rather than in two minutes.
-                    self._news_at = 0.0
+                    self._news_at = None
         finally:
             with contextlib.suppress(Exception):
                 await pubsub.unsubscribe(events.channel(self.room_id))
@@ -390,7 +396,7 @@ class RoomPlayer:
             return False
 
         now = time.monotonic()
-        if now - self._news_at < NEWS_RETRY_S:
+        if self._news_at is not None and now - self._news_at < NEWS_RETRY_S:
             return False
         self._news_at = now
         return True
@@ -765,7 +771,7 @@ class RoomPlayer:
         """Whether it is worth asking the radio again. Its answer only changes
         when the room's history does, so polling it is pure waste."""
         now = time.monotonic()
-        if now - self._autoplay_at < AUTOPLAY_RETRY_S:
+        if self._autoplay_at is not None and now - self._autoplay_at < AUTOPLAY_RETRY_S:
             return False
         self._autoplay_at = now
         return True

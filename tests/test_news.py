@@ -367,6 +367,18 @@ def test_the_feed_is_not_asked_twice_in_a_row(settings, tmp_path):
     assert player._news_due() is True
 
 
+def test_the_first_ask_does_not_wait_out_the_backoff(settings, tmp_path, monkeypatch):
+    """``time.monotonic`` counts from an arbitrary point — on Linux, boot — so a
+    worker started on a machine that came up a minute ago sees a clock reading
+    less than one retry window. "Never asked" has to be its own value, or that
+    worker's first two minutes are spent believing it just asked."""
+    monkeypatch.setattr(player_module.time, "monotonic", lambda: 12.0)
+    player = make_player(settings, tmp_path)
+
+    assert player._news_due() is True
+    assert player._autoplay_due() is True
+
+
 def test_an_instance_with_no_news_feed_never_looks(tmp_path):
     blank = Settings(
         database_url="sqlite+aiosqlite://",
