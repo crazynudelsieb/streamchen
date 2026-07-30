@@ -56,6 +56,16 @@ class ListenerInfo(BaseModel):
     is_host: bool
 
 
+class ListenerRename(BaseModel):
+    """What a listener wants to be called in this room.
+
+    Blank is meaningful: it asks for another generated name rather than for no
+    name at all, so the naming system stays reachable after a rename.
+    """
+
+    display_name: str = Field(default="", max_length=40)
+
+
 class TrackOut(BaseModel):
     id: uuid.UUID
     youtube_id: str

@@ -215,6 +215,9 @@ async def add_track(
             {"track_id": str(track.id), "title": track.title, "by": listener.display_name},
         )
         await events.publish(redis, room.id, events.QUEUE_CHANGED, {})
+        # The first song in a room that had gone quiet: no point making it wait
+        # for a sweep before anything is playing it.
+        await events.request_worker(redis, room.id)
 
     return serialize_track(track, listener)
 

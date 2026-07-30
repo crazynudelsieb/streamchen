@@ -266,6 +266,9 @@ async def room_page(
         await events.publish(
             redis, room.id, events.LISTENER_JOINED, {"display_name": listener.display_name}
         )
+        # Somebody just opened the room, so it is about to want a source. The
+        # presence TTL is what keeps this from firing on every poll.
+        await events.request_worker(redis, room.id)
 
     context = await _room_context(request, room, listener, db, redis, settings)
     # Handed over exactly once, immediately after creation, by the redirect.

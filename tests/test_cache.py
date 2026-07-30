@@ -80,6 +80,32 @@ def test_budget_never_evicts_the_track_being_played(tmp_path):
     assert not cache.has("other")
 
 
+def test_budget_never_evicts_another_rooms_next_track(tmp_path):
+    """One worker plays several rooms out of one directory, so eviction has to
+    know about all of them: taking the file the room next door is about to play
+    is exactly the stall the prefetch exists to avoid."""
+    cache = make_cache(tmp_path, budget=50)
+    cache.protected = lambda: {"next-door"}
+    write(cache, "next-door", size=100, age_s=900)
+    write(cache, "nobodys", size=100, age_s=10)
+
+    cache.enforce_budget(keep=())
+
+    assert cache.has("next-door")
+    assert not cache.has("nobodys")
+
+
+def test_sweep_never_expires_another_rooms_next_track(tmp_path):
+    cache = make_cache(tmp_path, ttl=600)
+    cache.protected = lambda: {"next-door"}
+    write(cache, "next-door", age_s=3600)
+    write(cache, "stale", age_s=3600)
+
+    assert cache.sweep() == 1
+    assert cache.has("next-door")
+    assert not cache.has("stale")
+
+
 def test_purge_empties_the_directory(tmp_path):
     cache = make_cache(tmp_path)
     for key in ("a", "b", "c"):

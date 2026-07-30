@@ -92,6 +92,24 @@ async def test_the_room_page_renders_the_stream_and_the_host_controls(client, ro
     assert 'id="audio"' in response.text
 
 
+async def test_the_room_page_offers_to_change_your_name(client, room):
+    response = await client.get(f"/r/{room['token']}")
+
+    assert 'id="nameEdit"' in response.text
+    assert 'id="nameInput"' in response.text
+    # The way back to a generated name, so the first edit is not final.
+    assert 'id="nameShuffle"' in response.text
+
+
+async def test_the_name_control_is_outside_the_swapped_region(client, room):
+    """The header is not part of the live fragment: re-rendering it on every
+    playback event would close the form under whoever was typing in it."""
+    fragment = await client.get(f"/r/{room['token']}/live")
+
+    assert fragment.status_code == 200
+    assert 'id="nameEdit"' not in fragment.text
+
+
 async def test_a_listener_gets_no_host_controls(new_client, room):
     guest = await new_client()
     response = await guest.get(f"/r/{room['token']}")

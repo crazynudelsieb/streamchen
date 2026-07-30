@@ -57,8 +57,12 @@ class Supervisor:
             directory=settings.audio_cache_dir,
             budget_bytes=settings.audio_cache_budget_bytes,
             ttl_s=settings.audio_prefetch_ttl_s,
+            # Every room in this worker shares the directory, so eviction has
+            # to know about all of them, not just whoever triggered it.
+            protected=self._protected_keys,
         )
         self.active: dict[uuid.UUID, ActiveRoom] = {}
+        self._wake = asyncio.Event()
 
     async def run(self) -> None:
         # A previous process may have died mid-track. Nothing on disk is worth
@@ -68,17 +72,45 @@ class Supervisor:
             logger.info("cleared %s leftover audio file(s) at startup", purged)
 
         logger.info("worker %s started", self.worker_id)
+        wakeups = asyncio.create_task(self._watch_wakeups())
         try:
             while True:
+                # Cleared before the sweep, so a room that goes live *during*
+                # one is picked up by the next instead of being missed.
+                self._wake.clear()
                 try:
                     await self._sweep()
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     logger.exception("supervisor sweep failed")
-                await asyncio.sleep(SWEEP_INTERVAL_S)
+
+                # A brand new room should not wait out a whole sweep interval
+                # before anything is connected to its mount: that wait is the
+                # "I pressed play and nothing happened" at the start of a
+                # room's life.
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self._wake.wait(), timeout=SWEEP_INTERVAL_S)
         finally:
+            wakeups.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await wakeups
             await self.shutdown()
+
+    async def _watch_wakeups(self) -> None:
+        """Rooms that just became live ask for a worker rather than waiting to
+        be noticed. Losing one of these costs a sweep interval, nothing more,
+        which is why it can be fire-and-forget on the publishing side."""
+        pubsub = self.redis.pubsub(ignore_subscribe_messages=True)
+        await pubsub.subscribe(events.WAKE_CHANNEL)
+        try:
+            async for message in pubsub.listen():
+                if message and message.get("type") == "message":
+                    self._wake.set()
+        finally:
+            with contextlib.suppress(Exception):
+                await pubsub.unsubscribe(events.WAKE_CHANNEL)
+                await pubsub.aclose()
 
     async def shutdown(self) -> None:
         for room_id in list(self.active):

@@ -223,13 +223,80 @@
     wireQueueActions(token);
     wireAddTrack(token);
     wireCopyButtons();
+    wireName(token);
     wireHostControls(token, root);
     wireClaimHost(token, root);
     connect(token);
   }
 
+  // -- Your name -----------------------------------------------------------
+  /* Names are generated on join so that taking part costs nothing; this is the
+   * override for people who would rather be recognisable. Sending a blank name
+   * asks for another generated one, which is what the shuffle button does. */
+  function wireName(token) {
+    var edit = document.getElementById('nameEdit');
+    var form = document.getElementById('nameForm');
+    var input = document.getElementById('nameInput');
+    var label = document.getElementById('myName');
+    var save = document.getElementById('nameSave');
+    var shuffle = document.getElementById('nameShuffle');
+    if (!edit || !form || !input || !label || !save || !shuffle) return;
+
+    function openForm(value) {
+      form.classList.remove('d-none');
+      edit.setAttribute('aria-expanded', 'true');
+      input.value = value;
+      input.focus();
+      input.select();
+    }
+
+    function closeForm() {
+      form.classList.add('d-none');
+      edit.setAttribute('aria-expanded', 'false');
+    }
+
+    edit.addEventListener('click', function () {
+      if (form.classList.contains('d-none')) openForm(label.textContent.trim());
+      else closeForm();
+    });
+
+    function submit(value, keepOpen) {
+      save.disabled = true;
+      shuffle.disabled = true;
+      return api('/rooms/' + token + '/me', {
+        method: 'PATCH', body: { display_name: value }, token: token
+      }).then(function (me) {
+        label.textContent = me.display_name;
+        input.value = me.display_name;
+        if (!keepOpen) closeForm();
+        // The name is on every track this listener queued, and on the history.
+        return refresh(token);
+      }).catch(function (error) {
+        toast(error.message || 'Could not change your name', 'danger');
+      }).finally(function () {
+        save.disabled = false;
+        shuffle.disabled = false;
+      });
+    }
+
+    save.addEventListener('click', function () { submit(input.value, false); });
+    shuffle.addEventListener('click', function () { submit('', true); });
+
+    input.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') { event.preventDefault(); submit(input.value, false); }
+      if (event.key === 'Escape') closeForm();
+    });
+  }
+
   // -- Audio ---------------------------------------------------------------
   var ticker = null;
+
+  /* Pressing play can legitimately be early: the worker may still be
+   * connecting its source, in which case the mount does not exist yet and the
+   * request 404s. That is a wait, not a failure, so keep asking for a few
+   * seconds before telling the listener anything is wrong. */
+  var CONNECT_ATTEMPTS = 8;
+  var CONNECT_BACKOFF_MS = 600;
 
   function wirePlayer(root, streamUrl) {
     var audio = document.getElementById('audio');
@@ -239,42 +306,95 @@
     var label = document.getElementById('liveLabel');
     var hint = document.getElementById('playbackHint');
     var volume = document.getElementById('volume');
-    var playing = false;
 
-    function setPlaying(value) {
-      playing = value;
-      icon.className = value ? 'bi bi-pause-fill' : 'bi bi-play-fill';
-      dot.classList.toggle('off', !value);
-      label.textContent = value ? 'Live' : 'Paused';
-      button.setAttribute('aria-label', value ? 'Stop listening' : 'Start listening');
+    // paused | connecting | live. Connecting is its own state because it is the
+    // one the listener used to see as "nothing happened".
+    var state = 'paused';
+    var attempt = 0;
+    var retry = null;
+
+    function render() {
+      var icons = { paused: 'play-fill', connecting: 'arrow-repeat', live: 'pause-fill' };
+      var labels = { paused: 'Paused', connecting: 'Connecting…', live: 'Live' };
+      icon.className = 'bi bi-' + icons[state];
+      dot.classList.toggle('off', state !== 'live');
+      label.textContent = labels[state];
+      button.setAttribute('aria-label', state === 'paused' ? 'Start listening' : 'Stop listening');
+    }
+
+    function stopStream() {
+      if (retry !== null) { window.clearTimeout(retry); retry = null; }
+      state = 'paused';
+      attempt = 0;
+      audio.pause();
+      // Drop the buffer: pressing play again has to rejoin *live*, not
+      // continue from where the listener stopped.
+      audio.removeAttribute('src');
+      audio.load();
+      render();
+    }
+
+    function attach() {
+      // Reset the element rather than reassigning the same src: after a 404 it
+      // will not retry the same URL on its own.
+      audio.removeAttribute('src');
+      audio.load();
+      audio.src = streamUrl;
+      return audio.play();
+    }
+
+    function tryConnect() {
+      attach().then(function () {
+        state = 'live';
+        attempt = 0;
+        hint.classList.add('d-none');
+        render();
+      }).catch(function (error) {
+        // A blocked autoplay is the browser saying no, and retrying will not
+        // change its mind — only a real gesture will.
+        if (error && error.name === 'NotAllowedError') { giveUp(); return; }
+        if (state !== 'connecting') return;
+        if (++attempt >= CONNECT_ATTEMPTS) { giveUp(); return; }
+        retry = window.setTimeout(tryConnect, CONNECT_BACKOFF_MS * attempt);
+      });
+    }
+
+    function giveUp() {
+      stopStream();
+      hint.classList.remove('d-none');
+    }
+
+    function startStream() {
+      if (retry !== null) { window.clearTimeout(retry); retry = null; }
+      state = 'connecting';
+      attempt = 0;
+      hint.classList.add('d-none');
+      render();
+      tryConnect();
     }
 
     button.addEventListener('click', function () {
-      if (playing) {
-        audio.pause();
-        // Drop the buffer: pressing play again has to rejoin *live*, not
-        // continue from where the listener stopped.
-        audio.removeAttribute('src');
-        audio.load();
-        setPlaying(false);
-        return;
-      }
-
-      audio.src = streamUrl;
-      audio.play().then(function () {
-        setPlaying(true);
-        hint.classList.add('d-none');
-      }).catch(function () {
-        // Autoplay policy, or nothing connected to the mount yet.
-        setPlaying(false);
-        hint.classList.remove('d-none');
-      });
+      if (state === 'paused') startStream(); else stopStream();
     });
 
-    audio.addEventListener('ended', function () { setPlaying(false); });
+    /* A live stream ending means the source went away — a worker restart, or
+     * the room being handed to another one. Rejoining is almost always the
+     * right answer, and the attempt cap stops it spinning on a deleted room. */
+    function dropped() {
+      if (state !== 'live') return;
+      state = 'connecting';
+      attempt = 0;
+      render();
+      tryConnect();
+    }
+
+    audio.addEventListener('ended', dropped);
+    audio.addEventListener('error', dropped);
+
     volume.addEventListener('input', function () { audio.volume = Number(volume.value); });
     audio.volume = Number(volume.value);
 
+    render();
     startTicker();
   }
 

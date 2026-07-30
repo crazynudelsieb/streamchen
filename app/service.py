@@ -58,6 +58,24 @@ def generate_display_name(seed: uuid.UUID | None = None) -> str:
     return f"{_ADJECTIVES[value % len(_ADJECTIVES)]}-{_NOUNS[(value // 97) % len(_NOUNS)]}"
 
 
+# Matches Listener.display_name.
+DISPLAY_NAME_MAX = 40
+
+
+def clean_display_name(value: str | None) -> str:
+    """A name a listener actually chose, or "" if what they sent amounts to
+    nothing.
+
+    Odd characters are cleaned up rather than rejected: a name arriving with a
+    stray line break is a paste, not an attack, and the queue has to render it
+    on one line either way. Whitespace is folded *before* unprintables are
+    dropped, so a line break separates two words instead of welding them
+    together, and zero-width characters cannot smuggle in an invisible name.
+    """
+    words = ("".join(char for char in word if char.isprintable()) for word in (value or "").split())
+    return " ".join(word for word in words if word)[:DISPLAY_NAME_MAX].strip()
+
+
 # --- Lookups ----------------------------------------------------------------
 async def get_room(db: AsyncSession, token: str) -> Room | None:
     result = await db.execute(select(Room).where(Room.token == token))
@@ -151,6 +169,20 @@ async def join_room(
     )
     db.add(listener)
     room.last_active_at = utcnow()
+    await db.flush()
+    return listener
+
+
+async def rename_listener(db: AsyncSession, listener: Listener, name: str | None) -> Listener:
+    """Let a listener pick their own name in this room.
+
+    Blank means "give me a different one", which is what keeps the generated
+    names reachable after a rename rather than making the first edit final. It
+    is still not an account: the name lives on the listener row for this room
+    only, and identity remains the session cookie (concept §14).
+    """
+    listener.display_name = clean_display_name(name) or generate_display_name()
+    listener.last_seen_at = utcnow()
     await db.flush()
     return listener
 
@@ -348,9 +380,11 @@ def now_playing(track: Track | None, viewer: Listener | None, position_s: float)
 
 
 __all__ = [
+    "DISPLAY_NAME_MAX",
     "FINISHED_STATES",
     "RADIO_DISPLAY_NAME",
     "RADIO_SESSION_ID",
+    "clean_display_name",
     "count_listeners",
     "create_room",
     "current_track",
@@ -369,6 +403,7 @@ __all__ = [
     "queued_youtube_ids",
     "radio_listener",
     "recent_tracks",
+    "rename_listener",
     "room_settings",
     "serialize_track",
     "set_vote",
