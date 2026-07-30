@@ -121,11 +121,24 @@ async def live_room_ids(redis: Redis) -> set[str]:
     }
 
 
+async def present_sessions(redis: Redis, room_id: uuid.UUID | str) -> set[str]:
+    """The sessions with live presence in this room.
+
+    A session, not a listener: presence is written by whoever holds the socket
+    and can outlive the row it belonged to, so anything shown to people pairs
+    this with the database rather than trusting it alone (``online_listeners``).
+    """
+    prefix = presence_key(room_id, "")
+    return {
+        (key.decode("utf-8") if isinstance(key, bytes) else key).removeprefix(prefix)
+        async for key in redis.scan_iter(match=presence_pattern(room_id), count=200)
+    }
+
+
 async def count_present(redis: Redis, room_id: uuid.UUID | str) -> int:
-    total = 0
-    async for _ in redis.scan_iter(match=presence_pattern(room_id), count=200):
-        total += 1
-    return total
+    """How many sessions are here. The worker's "is this room empty" question,
+    answered without touching the database."""
+    return len(await present_sessions(redis, room_id))
 
 
 async def set_now_playing(redis: Redis, room_id: uuid.UUID | str, payload: dict | None) -> None:

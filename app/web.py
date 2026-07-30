@@ -35,6 +35,7 @@ from app.config import Settings
 from app.contact import imprint_payload, legal_payload
 from app.models import Listener, Room
 from app.service import (
+    online_listeners,
     queued_tracks,
     recent_tracks,
     serialize_track,
@@ -258,7 +259,9 @@ async def _room_context(
     ]
     history = [serialize_track(track, listener) for track in await recent_tracks(db, room.id)]
 
-    online = await events.count_present(redis, room.id) or 1
+    # Present *and* still a listener here -- see service.online_listeners for
+    # why presence on its own would show people who are no longer in the room.
+    online = len(await online_listeners(db, redis, room.id)) or 1
 
     pending = sum(1 for track in queue if track.mine)
     if room.queue_locked and not is_host:

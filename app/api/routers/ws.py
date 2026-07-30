@@ -19,12 +19,17 @@ from redis.asyncio import Redis
 from app import events
 from app.models import Room
 from app.security import is_valid_room_token, new_session_id
-from app.service import get_room, join_room
+from app.service import get_room, is_banned, join_room
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 PING_INTERVAL_S = 25
+
+# Close codes in the private range, for the two answers that are not "here is
+# your socket". The client stops reconnecting when it hears them.
+CLOSE_NO_ROOM = 4404
+CLOSE_REMOVED = 4403
 
 
 async def _presence_heartbeat(redis: Redis, room: Room, session_id: str) -> None:
@@ -34,13 +39,36 @@ async def _presence_heartbeat(redis: Redis, room: Room, session_id: str) -> None
         await events.mark_present(redis, room.id, session_id)
 
 
-async def _relay(websocket: WebSocket, pubsub) -> None:
+def _removes(data: str, listener_id: str) -> bool:
+    """Is this event the host removing the listener on the other end?
+
+    Being told is what makes a kick stick. The socket outlives the row it was
+    opened for -- and while it is open its heartbeat keeps writing presence, so
+    a listener nobody can see would still be counted as being in the room.
+    """
+    try:
+        event = json.loads(data)
+    except ValueError:  # pragma: no cover - we publish the JSON ourselves
+        return False
+    payload = event.get("data") or {}
+    return (
+        event.get("type") == events.LISTENER_LEFT
+        and bool(payload.get("banned"))
+        and payload.get("listener_id") == listener_id
+    )
+
+
+async def _relay(websocket: WebSocket, pubsub, listener_id: str) -> None:
     async for message in pubsub.listen():
         if message is None or message.get("type") != "message":
             continue
         data = message["data"]
         if isinstance(data, bytes):
             data = data.decode("utf-8")
+        if _removes(data, listener_id):
+            # Hanging up wakes the handler, which drops presence on its way out.
+            await websocket.close(code=CLOSE_REMOVED)
+            return
         await websocket.send_text(data)
 
 
@@ -51,7 +79,7 @@ async def room_socket(websocket: WebSocket, token: str) -> None:
     sessionmaker = websocket.app.state.sessionmaker
 
     if not is_valid_room_token(token):
-        await websocket.close(code=4404)
+        await websocket.close(code=CLOSE_NO_ROOM)
         return
 
     session_id = websocket.cookies.get(settings.session_cookie) or new_session_id()
@@ -59,10 +87,16 @@ async def room_socket(websocket: WebSocket, token: str) -> None:
     async with sessionmaker() as db:
         room = await get_room(db, token)
         if room is None:
-            await websocket.close(code=4404)
+            await websocket.close(code=CLOSE_NO_ROOM)
+            return
+        # Before the join, which would otherwise hand a removed listener a new
+        # row and undo the kick they were refused the room over.
+        if await is_banned(db, room.id, session_id):
+            await websocket.close(code=CLOSE_REMOVED)
             return
         listener = await join_room(db, room, session_id)
         display_name = listener.display_name
+        listener_id = str(listener.id)
         room_id = room.id
         await db.commit()
 
@@ -78,7 +112,7 @@ async def room_socket(websocket: WebSocket, token: str) -> None:
 
     await websocket.send_text(json.dumps({"type": "READY", "data": {"room": token}}))
 
-    relay = asyncio.create_task(_relay(websocket, pubsub))
+    relay = asyncio.create_task(_relay(websocket, pubsub, listener_id))
     heartbeat = asyncio.create_task(_presence_heartbeat(redis, room, session_id))
 
     try:

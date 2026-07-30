@@ -118,11 +118,17 @@ async def ban(
     for track in pending.scalars().all():
         await db.delete(track)
 
+    listener_id = str(listener.id)
     await events.mark_absent(redis, room.id, listener.session_id)
     await db.delete(listener)
     await db.flush()
 
-    await events.publish(redis, room.id, events.LISTENER_LEFT, {"banned": True})
+    # Carries who, because their own socket is listening for this: it holds a
+    # presence heartbeat, and one that outlives the row leaves a ghost in the
+    # room. The id is the public one -- the session id is a credential.
+    await events.publish(
+        redis, room.id, events.LISTENER_LEFT, {"banned": True, "listener_id": listener_id}
+    )
     await events.publish(redis, room.id, events.QUEUE_CHANGED, {})
     return {"banned": str(payload.listener_id)}
 

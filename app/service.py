@@ -10,10 +10,12 @@ from __future__ import annotations
 import uuid
 from datetime import timedelta
 
+from redis.asyncio import Redis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app import events
 from app.config import Settings
 from app.models import (
     FINISHED_STATES,
@@ -118,6 +120,29 @@ async def count_listeners(db: AsyncSession, room_id: uuid.UUID) -> int:
         )
     )
     return int(result.scalar_one())
+
+
+async def online_listeners(db: AsyncSession, redis: Redis, room_id: uuid.UUID) -> list[Listener]:
+    """Who is in the room right now, in join order.
+
+    A listener needs both halves: a row in Postgres and live presence in Redis.
+    Either on its own lies. Rows alone count everybody who ever opened the link,
+    and presence alone can outlive the row it belonged to -- a removed listener
+    whose socket is still open keeps refreshing a key nobody owns any more. This
+    is the one answer the header count and the listener list are both built from,
+    so the two can never disagree.
+    """
+    present = await events.present_sessions(redis, room_id)
+    present.discard(RADIO_SESSION_ID)
+    if not present:
+        return []
+
+    result = await db.execute(
+        select(Listener)
+        .where(Listener.room_id == room_id, Listener.session_id.in_(present))
+        .order_by(Listener.created_at)
+    )
+    return list(result.scalars().all())
 
 
 async def radio_listener(db: AsyncSession, room: Room) -> Listener:
@@ -400,6 +425,7 @@ __all__ = [
     "join_room",
     "listener_info",
     "now_playing",
+    "online_listeners",
     "pending_count_for",
     "playable_tracks",
     "prune_idle_rooms",

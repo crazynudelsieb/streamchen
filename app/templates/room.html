@@ -41,8 +41,16 @@
             {% endif %}
 
             <div class="text-muted small d-flex align-items-center flex-wrap gap-1">
-                <span><span id="listenerCount">{{ listeners }}</span>
-                    listener{{ '' if listeners == 1 else 's' }}</span>
+                {# "Two listeners" is the start of a question, so it is a button:
+                   the answer is who they are. #}
+                {# Its own text is the label a screen reader wants ("2
+                   listeners"), so the hint is a title and not an aria-label. #}
+                <button type="button" class="btn btn-link btn-sm p-0 align-baseline text-body-secondary"
+                        id="listenersOpen" data-bs-toggle="modal" data-bs-target="#listenersModal"
+                        title="See who is listening">
+                    <span id="listenerCount">{{ listeners }}</span>
+                    listener<span id="listenerPlural">{{ '' if listeners == 1 else 's' }}</span>
+                </button>
                 <span aria-hidden="true">·</span>
                 <span>you are</span>
                 <img class="avatar avatar-sm" src="{{ avatar(me.id) }}" alt="" width="26" height="26">
@@ -285,6 +293,27 @@
                 <button class="btn btn-primary w-100 mt-3 d-none" type="button" id="shareNative">
                     <i class="bi bi-box-arrow-up me-1"></i>Share…
                 </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{# Everybody's, not the host's: knowing who else is here is part of listening
+   together. Rendered empty and filled from the roster when it opens. #}
+<div class="modal fade" id="listenersModal" tabindex="-1"
+     aria-labelledby="listenersModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title h6" id="listenersModalLabel">
+                    <i class="bi bi-people me-2"></i>Who is listening
+                </h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="roomListenerList">
+                    <p class="text-muted small mb-0">Loading…</p>
+                </div>
             </div>
         </div>
     </div>
