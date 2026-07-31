@@ -37,6 +37,7 @@ from app.service import queued_youtube_ids, radio_listener, recent_tracks
 from app.youtube import (
     YouTubeError,
     fetch_metadata,
+    parse_playlist_url,
     parse_youtube_id,
     playlist_ids,
     radio_for,
@@ -60,17 +61,22 @@ def parse_playlist_field(value: str | None) -> tuple[list[str], list[str]]:
     """Split a host's fallback playlist into (playlist URLs, video ids).
 
     Accepts what a host would plausibly paste: one playlist link, a pile of
-    video links, bare ids, separated by newlines, commas or spaces.
+    video links, bare ids, separated by newlines, commas or spaces. YouTube
+    Music albums and playlists count — for a room whose baseline is *records*
+    rather than *videos*, that is the catalogue worth pasting from.
     """
     urls: list[str] = []
     ids: list[str] = []
 
     for chunk in (value or "").replace(",", " ").split():
         # A playlist link resolves to many ids, so it is kept whole; anything
-        # else has to name a single video or it is not usable.
-        if "list=" in chunk or "/playlist" in chunk:
-            if chunk not in urls:
-                urls.append(chunk)
+        # else has to name a single video or it is not usable. Playlist first:
+        # a link carrying both means the playlist here, where the whole field
+        # is a pool to draw from.
+        playlist = parse_playlist_url(chunk)
+        if playlist:
+            if playlist not in urls:
+                urls.append(playlist)
             continue
         youtube_id = parse_youtube_id(chunk)
         if youtube_id and youtube_id not in ids:

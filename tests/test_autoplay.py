@@ -62,6 +62,28 @@ def test_playlist_field_accepts_what_a_host_would_paste():
     assert ids == ["aaaaaaaaaaa", "bbbbbbbbbbb"]
 
 
+def test_playlist_field_takes_youtube_music():
+    """A host whose room has a sound pastes from the music catalogue."""
+    urls, ids = autoplay.parse_playlist_field(
+        "https://music.youtube.com/playlist?list=OLAK5uy_abc\n"
+        "https://music.youtube.com/browse/MPREb_abc123\n"
+        f"https://music.youtube.com/watch?v={video_id(7)}"
+    )
+
+    assert urls == [
+        "https://www.youtube.com/playlist?list=OLAK5uy_abc",
+        "https://music.youtube.com/browse/MPREb_abc123",
+    ]
+    assert ids == [video_id(7)]
+
+
+def test_playlist_field_drops_links_that_are_not_youtube():
+    """The field feeds yt-dlp directly, so a stranger's URL must not reach it."""
+    urls, ids = autoplay.parse_playlist_field("https://example.com/playlist?list=PLabc")
+
+    assert (urls, ids) == ([], [])
+
+
 def test_playlist_field_is_empty_when_unset():
     assert autoplay.parse_playlist_field(None) == ([], [])
     assert autoplay.parse_playlist_field("   ") == ([], [])

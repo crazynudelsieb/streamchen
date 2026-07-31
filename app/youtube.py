@@ -20,7 +20,7 @@ import re
 import unicodedata
 from dataclasses import asdict, dataclass, replace
 from typing import Any
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import ParseResult, parse_qs, quote, urlparse
 
 from redis.asyncio import Redis
 
@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _EMBED_PATHS = ("/embed/", "/shorts/", "/v/", "/live/")
+
+# Playlist ids have none of the tidiness of video ids: two characters (WL) up
+# to album ids like OLAK5uy_…. The alphabet is all they reliably share.
+_LIST_RE = re.compile(r"^[A-Za-z0-9_-]{2,100}$")
+_ALBUM_PATH = "/browse/"
+_YOUTUBE_HOSTS = ("youtube.com", "music.youtube.com", "youtube-nocookie.com")
 
 # Search draws on two places at once. A video search is the one that actually
 # knows what a query means — it answers "Antilopen Gang - Pizza" with the
@@ -60,19 +66,12 @@ class TrackMetadata:
         return asdict(self)
 
 
-def parse_youtube_id(value: str) -> str | None:
-    """Accept anything a listener might paste; return the 11-character id.
+def _youtube_url(value: str) -> tuple[str, ParseResult] | None:
+    """(bare host, parsed URL) if ``value`` points at a YouTube domain.
 
-    Handles watch URLs, youtu.be, /shorts/, /embed/, /live/, extra query
-    parameters, and a bare id.
+    The host is stripped of ``www.`` and ``m.`` so the callers below can match
+    it exactly rather than by suffix — ``youtube.com.evil.test`` is not YouTube.
     """
-    value = (value or "").strip()
-    if not value:
-        return None
-
-    if _ID_RE.match(value):
-        return value
-
     if "://" not in value:
         value = "https://" + value
 
@@ -82,13 +81,36 @@ def parse_youtube_id(value: str) -> str | None:
         return None
 
     host = (parsed.hostname or "").lower().removeprefix("www.").removeprefix("m.")
+    if host != "youtu.be" and host not in _YOUTUBE_HOSTS:
+        return None
+    return host, parsed
 
-    if host in ("youtu.be",):
+
+def parse_youtube_id(value: str) -> str | None:
+    """Accept anything a listener might paste; return the 11-character id.
+
+    Handles watch URLs, youtu.be, /shorts/, /embed/, /live/, extra query
+    parameters, and a bare id. YouTube Music watch links come out the same way:
+    the catalogue is a different front end onto the same videos.
+
+    A link that names both a video and a playlist resolves to the video, which
+    is what somebody adding one song to a queue meant by pasting it.
+    """
+    value = (value or "").strip()
+    if not value:
+        return None
+
+    if _ID_RE.match(value):
+        return value
+
+    found = _youtube_url(value)
+    if found is None:
+        return None
+    host, parsed = found
+
+    if host == "youtu.be":
         candidate = parsed.path.lstrip("/").split("/")[0]
         return candidate if _ID_RE.match(candidate) else None
-
-    if host not in ("youtube.com", "music.youtube.com", "youtube-nocookie.com"):
-        return None
 
     if parsed.path in ("/watch", "/watch/"):
         candidate = parse_qs(parsed.query).get("v", [""])[0]
@@ -100,6 +122,40 @@ def parse_youtube_id(value: str) -> str | None:
             return candidate if _ID_RE.match(candidate) else None
 
     return None
+
+
+def parse_playlist_url(value: str) -> str | None:
+    """A playlist link in canonical form, or None if it names no playlist.
+
+    Canonical rather than verbatim because the URL is the cache key: the same
+    album pasted with and without whatever the share sheet appended should be
+    one entry, not two. Being a parser rather than a substring test also keeps
+    ``https://example.com/playlist`` from reaching yt-dlp's generic extractor.
+
+    YouTube Music is where a host copies a link when they mean *this record* —
+    both the shared ``?list=OLAK5uy_…`` form and the ``/browse/MPREb_…`` one
+    the address bar shows on an album page.
+    """
+    value = (value or "").strip()
+    if not value:
+        return None
+
+    found = _youtube_url(value)
+    if found is None:
+        return None
+    host, parsed = found
+
+    # Album pages exist only on the music front end, and only under /browse/.
+    if host == "music.youtube.com" and parsed.path.startswith(_ALBUM_PATH):
+        album = parsed.path[len(_ALBUM_PATH) :].split("/")[0]
+        if not _LIST_RE.match(album):
+            return None
+        return f"https://music.youtube.com/browse/{album}"
+
+    playlist = parse_qs(parsed.query).get("list", [""])[0]
+    if not _LIST_RE.match(playlist):
+        return None
+    return f"https://www.youtube.com/playlist?list={playlist}"
 
 
 def _metadata_key(youtube_id: str) -> str:

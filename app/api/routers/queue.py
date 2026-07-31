@@ -35,6 +35,7 @@ from app.youtube import (
     YouTubeError,
     fetch_metadata,
     normalize_query,
+    parse_playlist_url,
     parse_youtube_id,
     search_music,
 )
@@ -133,6 +134,16 @@ async def add_track(
 
     youtube_id = parse_youtube_id(payload.url)
     if youtube_id is None:
+        # A playlist is not a malformed request, it is a request aimed at the
+        # wrong place: the queue takes one song, the radio playlist takes the
+        # pool. Saying so is the difference between a dead end and a redirect.
+        if parse_playlist_url(payload.url):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "That is a playlist. Add one song here — a playlist belongs in "
+                "the room's radio settings, where it fills the queue whenever "
+                "nobody is asking for anything.",
+            )
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "That is not a YouTube link")
 
     pending = await pending_count_for(db, room.id, listener.id)

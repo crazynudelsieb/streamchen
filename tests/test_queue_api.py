@@ -33,6 +33,19 @@ async def test_a_non_youtube_link_is_rejected(client, room):
     assert response.status_code == 400
 
 
+async def test_a_playlist_is_sent_to_the_radio_settings_instead(client, room):
+    """Refusing is right; refusing without saying where it belongs is not."""
+    response = await client.post(
+        f"/api/rooms/{room['token']}/tracks",
+        json={"url": "https://music.youtube.com/playlist?list=OLAK5uy_abc"},
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"].lower()
+    assert "playlist" in detail
+    assert "radio" in detail
+
+
 async def test_the_same_song_cannot_be_queued_twice(client, room):
     await add(client, room["token"], 1)
     response = await add(client, room["token"], 1)
