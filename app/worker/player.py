@@ -26,7 +26,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Iterable
+from collections.abc import Awaitable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -345,8 +345,10 @@ class RoomPlayer:
         track = await self._claim_next_track()
         if track is None:
             # Cold start only — during playback the lookahead has already done
-            # this, early enough for the pick to be downloaded in time.
-            await self._autoplay()
+            # this, early enough for the pick to be downloaded in time. The
+            # radio's first pick reaches YouTube for a mix, so it is fed like
+            # any other wait on this loop.
+            await self._while_feeding(self._autoplay())
             track = await self._claim_next_track()
         if track is None:
             await self._idle(self.settings.worker_poll_interval_s)
@@ -613,7 +615,9 @@ class RoomPlayer:
             return prepared.decoder
 
         try:
-            path = await self._downloads.fetch(track["youtube_id"], keep=self.protected_keys)
+            path = await self._while_feeding(
+                self._downloads.fetch(track["youtube_id"], keep=self.protected_keys)
+            )
         except YouTubeError as exc:
             logger.warning("room %s: %s is unplayable (%s)", self.token, track["title"], exc)
             await self._finish(track["id"], STATE_FAILED, str(exc))
@@ -671,6 +675,40 @@ class RoomPlayer:
         await self._write(chunk)
         while time.monotonic() < deadline and not self._wake.is_set():
             await self._write(chunk)
+
+    async def _while_feeding[T](self, work: Awaitable[T]) -> T:
+        """Await something slow without letting the encoder starve.
+
+        Anything this loop waits on that touches the network — a cold-start
+        download, the radio's first pick — is a hole in the broadcast of its
+        own length, and Icecast disconnects a source that has gone quiet for
+        ``source-timeout`` seconds, taking the mount and every listener on it
+        with it. The lookahead keeps these waits off the boundary for as long
+        as something is playing; this is what covers the cold start, where
+        there is no current track to look ahead from.
+
+        Silence is written at the encoder's pace, so waiting here costs real
+        time rather than a busy loop.
+        """
+        task = asyncio.ensure_future(work)
+        chunk = silence_chunk(self.settings, SILENCE_BLOCK_S)
+        try:
+            # One turn of the event loop first: work that never suspends — a
+            # cache hit, a pick Redis already had — then costs no silence at
+            # all, and a gapless boundary stays gapless.
+            await asyncio.sleep(0)
+            while not task.done():
+                await self._write(chunk)
+        except BaseException:
+            # The encoder died under us. Let go of the work, but leave its
+            # failure retrievable or asyncio complains when it is collected.
+            # This does not abandon a download: ``Downloads.fetch`` shields the
+            # real one, so the next attempt waits on it instead of starting
+            # over.
+            task.cancel()
+            task.add_done_callback(_retrieve_failure)
+            raise
+        return await task
 
     async def _requeue_current(self) -> None:
         """Give the track that was playing back to the queue.

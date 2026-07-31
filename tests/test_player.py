@@ -35,6 +35,38 @@ class FakeDecoder:
         return 0
 
 
+class FakeStdin:
+    """The encoder's pipe, counting what reaches it.
+
+    ``drain`` sleeps rather than returning straight away, so the silence loop
+    paces itself the way the real encoder's ``-re`` flag makes it instead of
+    spinning as fast as the test's event loop will go.
+    """
+
+    def __init__(self, fail_after_writes: int | None = None) -> None:
+        self.written = 0
+        self.writes = 0
+        self._fail_after = fail_after_writes
+
+    def write(self, data: bytes) -> None:
+        self.writes += 1
+        if self._fail_after is not None and self.writes > self._fail_after:
+            raise BrokenPipeError
+        self.written += len(data)
+
+    async def drain(self) -> None:
+        await asyncio.sleep(0.001)
+
+
+class FakeEncoder:
+    """Stands in for the ffmpeg process holding the room's Icecast connection.
+    Whether it is being fed is the only thing asked of it here."""
+
+    def __init__(self, fail_after_writes: int | None = None) -> None:
+        self.returncode = None
+        self.stdin = FakeStdin(fail_after_writes)
+
+
 def make_cache(tmp_path) -> AudioCache:
     return AudioCache(directory=tmp_path / "audio", budget_bytes=10**9, ttl_s=600)
 
@@ -249,3 +281,56 @@ async def test_a_failed_download_can_be_retried(tmp_path, monkeypatch):
         await downloads.fetch("abc")
     assert (await downloads.fetch("abc")).name == "abc.webm"
     assert attempts == ["abc", "abc"]
+
+
+# --- Never starving the encoder ---------------------------------------------
+async def test_a_slow_wait_keeps_the_encoder_fed(settings, tmp_path):
+    """The regression this exists for.
+
+    A cold start awaited its download with nothing going to the encoder, so
+    Icecast disconnected the source after its 20-second timeout, the mount
+    vanished, and every listener got a 404 from a room that looked fine.
+    """
+    player = make_player(settings, tmp_path)
+    player._encoder = FakeEncoder()
+
+    async def slow() -> str:
+        await asyncio.sleep(0.05)
+        return "done"
+
+    assert await player._while_feeding(slow()) == "done"
+    assert player._encoder.stdin.written > 0
+
+
+async def test_work_that_is_already_done_costs_no_silence(settings, tmp_path):
+    """A warm boundary has to stay gapless: a block of silence in front of
+    every cache hit would be audible at each handover."""
+    player = make_player(settings, tmp_path)
+    player._encoder = FakeEncoder()
+
+    async def immediate() -> str:
+        return "done"
+
+    assert await player._while_feeding(immediate()) == "done"
+    assert player._encoder.stdin.written == 0
+
+
+async def test_a_download_survives_the_encoder_dying_under_it(settings, tmp_path, monkeypatch):
+    """Losing the encoder must not abandon the download.
+
+    ``Downloads.fetch`` shields the real one, so the attempt that follows the
+    reconnect waits on what is already in flight rather than paying for it a
+    second time.
+    """
+    calls = stub_downloads(monkeypatch, delay_s=0.05)
+    player = make_player(settings, tmp_path)
+    player._encoder = FakeEncoder(fail_after_writes=1)
+
+    with pytest.raises(BrokenPipeError):
+        await player._while_feeding(player._downloads.fetch("abc"))
+
+    player._encoder = FakeEncoder()
+    path = await player._while_feeding(player._downloads.fetch("abc"))
+
+    assert path.exists()
+    assert calls == ["abc"]
