@@ -474,6 +474,53 @@ async def test_the_radio_does_not_replay_the_band_it_just_heard(api, settings):
     assert track.youtube_id not in {video_id(900), video_id(901), video_id(902)}
 
 
+def _big_pool(first: int, size: int):
+    """A pool of interchangeable songs — nothing in it scores above the rest, so
+    what comes back says only how far down the draw was allowed to reach."""
+
+    async def _lookup(*_args, **_kwargs):
+        return [
+            SearchCandidate(
+                youtube_id=video_id(first + index),
+                title=f"Band {index} - Song {index}",
+                duration_s=200,
+                channel=f"Band {index}",
+            )
+            for index in range(size)
+        ]
+
+    return _lookup
+
+
+async def test_a_room_starting_on_the_host_playlist_draws_from_all_of_it(
+    api, settings, monkeypatch
+):
+    """A host pastes a playlist to have *that list* on, so the room opening on
+    it has to be able to open anywhere in it. Ranking the entries against each
+    other would start the room on the same few every time."""
+    monkeypatch.setattr("app.autoplay.playlist_candidates", _big_pool(600, 20))
+    room = await _room_with_history(
+        api, played=[], fallback="https://www.youtube.com/playlist?list=PLabc"
+    )
+
+    async with api.state.sessionmaker() as db:
+        picks = {await autoplay.pick(db, api.state.redis, settings, room) for _ in range(60)}
+
+    assert len(picks) > autoplay.PICK_FROM_TOP
+
+
+async def test_the_mix_is_still_drawn_from_its_best_few(api, settings, monkeypatch):
+    """The cap belongs to the mix and stays there. That list is YouTube's rather
+    than anybody's choice, and its tail is where a room wanders off."""
+    monkeypatch.setattr("app.autoplay.radio_candidates", _big_pool(900, 20))
+    room = await _room_with_history(api, played=video_id(1), fallback=None)
+
+    async with api.state.sessionmaker() as db:
+        picks = {await autoplay.pick(db, api.state.redis, settings, room) for _ in range(60)}
+
+    assert picks <= {video_id(900 + index) for index in range(autoplay.PICK_FROM_TOP)}
+
+
 async def test_the_radio_is_not_counted_as_a_listener(api, settings):
     room = await _room_with_history(api, played=video_id(1))
     await events.mark_present(api.state.redis, room.id, "sess")

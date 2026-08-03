@@ -94,6 +94,13 @@ async def create_room(db: AsyncSession, settings: Settings, name: str) -> tuple[
         host_secret_hash=hash_secret(host_secret),
         max_listeners=settings.default_max_listeners,
         max_pending_per_listener=settings.default_max_pending_per_listener,
+        # A new room is off the air until its host says otherwise. The minute
+        # after a room is created is the minute it is being set up -- named, given
+        # a radio playlist, its link copied somewhere -- and none of that is worth
+        # an encoder, a mount and whoever opens the link early hearing the room
+        # being built. "Start stream" is one button, and it is the same one that
+        # stops it again.
+        stream_stopped=True,
     )
     db.add(room)
     await db.flush()

@@ -90,6 +90,12 @@ MAX_CANDIDATES = 12
 
 # How many of the best candidates the pick is drawn from, and how far behind
 # the leader still counts as tied with it.
+#
+# The cap is there for a mix, which is somebody else's list and can be a long
+# tail of things nobody would have chosen. A host's playlist is the opposite —
+# every entry in it was picked for this room — so drawing from five of it would
+# open the room on the same handful of songs every time, and that is not what a
+# playlist was pasted in for. See ``pick``.
 PICK_FROM_TOP = 5
 DRAW_BAND = 40.0
 
@@ -230,7 +236,9 @@ def rank_pool(
     return [(score, candidate) for score, _index, candidate in scored]
 
 
-def draw(ranked: list[tuple[float, SearchCandidate]]) -> list[SearchCandidate]:
+def draw(
+    ranked: list[tuple[float, SearchCandidate]], *, top: int = PICK_FROM_TOP
+) -> list[SearchCandidate]:
     """The ranking, with the candidates that tie for best shuffled among
     themselves.
 
@@ -240,12 +248,16 @@ def draw(ranked: list[tuple[float, SearchCandidate]]) -> list[SearchCandidate]:
     than the gap between the tiers in :func:`rank_pool` — so this is only ever
     unpredictable between picks that were equally good, and never promotes a
     replay over something the room has not heard.
+
+    ``top`` is how far down the ranking is still eligible to be drawn from. The
+    band is what keeps that honest either way: however wide the draw, a replay
+    or a band the room just heard is a tier below and cannot be reached.
     """
     if not ranked:
         return []
 
     best = ranked[0][0]
-    tied = [c for score, c in ranked[:PICK_FROM_TOP] if best - score <= DRAW_BAND]
+    tied = [c for score, c in ranked[: max(1, top)] if best - score <= DRAW_BAND]
     random.shuffle(tied)
     return tied + [c for _score, c in ranked[len(tied) :]]
 
@@ -288,7 +300,14 @@ async def pick(
             blocked_artists=blocked,
             artist_counts=counts,
             max_duration_s=settings.max_track_duration_s,
-        )
+        ),
+        # The host's playlist is drawn from whole. A room that starts on it
+        # should start somewhere different every time — "put this list on" is
+        # what a host means by pasting one, not "play me the five entries of it
+        # that most look like records". The mix keeps the cap: it is YouTube's
+        # list rather than anybody's choice, and its tail is where a room
+        # wanders off.
+        top=len(pool) if source == "playlist" else PICK_FROM_TOP,
     )
 
     for candidate in ranked[:MAX_CANDIDATES]:

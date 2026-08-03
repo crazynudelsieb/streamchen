@@ -170,12 +170,15 @@
                     </div>
 
                     {# The room is alive, the source is not. Everyone sees this,
-                       so nobody wonders whether their browser is broken. #}
+                       so nobody wonders whether their browser is broken. It
+                       covers both ways a room gets here — never started, or
+                       stopped again — because to everyone but the host they are
+                       the same room and the same wait. #}
                     <div class="alert alert-warning mt-3 mb-0 py-2 small {{ '' if room.stream_stopped else 'd-none' }}"
                          id="streamStoppedNotice">
                         <i class="bi bi-pause-circle me-1"></i>
-                        The host stopped the stream. The room, the queue and this link all stay —
-                        it plays again when the host starts it.
+                        The stream is off. The room, the queue and this link all stay —
+                        it plays as soon as the host starts it.
                     </div>
 
                     <div class="alert alert-warning mt-3 mb-0 py-2 small d-none" id="playbackHint">

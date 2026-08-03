@@ -21,7 +21,7 @@ from app.api.deps import (
 from app.api.playback import now_playing_state
 from app.avatars import listener_seed
 from app.config import Settings
-from app.models import Listener, Room
+from app.models import Listener, Room, utcnow
 from app.ratelimit import Limit, check
 from app.schemas import (
     ListenerInfo,
@@ -57,7 +57,6 @@ router = APIRouter(tags=["rooms"])
 async def create(
     payload: RoomCreate,
     db: AsyncSession = Depends(get_db),
-    redis: Redis = Depends(get_redis),
     settings: Settings = Depends(get_settings_dep),
     session_id: str = Depends(get_session_id),
 ) -> RoomCreated:
@@ -67,9 +66,9 @@ async def create(
     """
     room, host_secret = await create_room(db, settings, payload.name)
     await join_room(db, room, session_id, as_host=True)
-    # The host lands on the room page in the next breath and presses play, so
-    # the source wants to be connected by then.
-    await events.request_worker(redis, room.id)
+    # Deliberately no worker request: a new room is created with its stream
+    # stopped, so there is nothing for a worker to connect to yet. Pressing
+    # "Start stream" is what asks for one, and that is one PATCH away.
     return RoomCreated(
         token=room.token,
         name=room.name,
@@ -173,14 +172,25 @@ async def update(
                 "somewhere inside it.",
             )
         room.fallback_playlist = field or None
+        if room.fallback_playlist:
+            # Pasting a playlist into a quiet room is a request for music, so
+            # the room counts as active from here. Without this a room whose
+            # last listener registered a while ago is outside the window the
+            # sweep looks at, and the host's list sits there playing nothing.
+            room.last_active_at = utcnow()
 
     await db.flush()
 
-    if changes.get("stream_stopped") is not None:
+    if changes.get("stream_stopped") is not None or (
+        "fallback_playlist" in changes and room.fallback_playlist
+    ):
         # Both directions: a sweep decides who gets a source and who loses one,
         # and it would get here within a few seconds by itself. Those are the
         # seconds a host spends looking at the player wondering whether the
         # button did anything.
+        #
+        # A saved radio playlist is the same wait wearing different clothes:
+        # the room has something to play now and no source to play it on.
         await events.request_worker(redis, room.id)
 
     await events.publish(

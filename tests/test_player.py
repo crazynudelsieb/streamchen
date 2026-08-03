@@ -9,12 +9,15 @@ same track twice.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import uuid
 from pathlib import Path
 
+import fakeredis.aioredis
 import pytest
 
+from app import events
 from app.config import Settings
 from app.worker import player as player_module
 from app.worker.cache import AudioCache
@@ -203,6 +206,35 @@ def test_the_radio_is_asked_again_once_the_cooldown_has_passed(settings, tmp_pat
     # Pretend the whole cooldown went by rather than sleeping through it.
     player._autoplay_at -= player_module.AUTOPLAY_RETRY_S + 1
     assert player._autoplay_due() is True
+
+
+async def test_a_settings_change_drops_the_cooldowns(settings, tmp_path):
+    """The cooldowns are there to stop the loop *polling* for an answer that has
+    not changed. A host saving a radio playlist is that answer changing, and
+    they are watching the player to see whether it did anything."""
+    player = make_player(settings, tmp_path)
+    player.redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    player._autoplay_due()
+    player._news_at = time.monotonic()
+
+    watcher = asyncio.create_task(player._watch_control())
+    try:
+        # The subscription is established inside the task, so the publish has to
+        # wait for it or it goes out to nobody.
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            await events.publish(player.redis, player.room_id, events.ROOM_UPDATED, {})
+            if player._wake.is_set():
+                break
+    finally:
+        watcher.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watcher
+        await player.redis.aclose()
+
+    assert player._wake.is_set()
+    assert player._autoplay_at is None
+    assert player._news_at is None
 
 
 # --- One download per track -------------------------------------------------
