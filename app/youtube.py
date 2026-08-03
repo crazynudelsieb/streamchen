@@ -47,7 +47,17 @@ _YOUTUBE_HOSTS = ("youtube.com", "music.youtube.com", "youtube-nocookie.com")
 # or an hour-long compilation, which is what the music restriction was for.
 _VIDEO_SEARCH_URL = "ytsearch{count}:{query}"
 _MUSIC_SEARCH_URL = "https://music.youtube.com/search?q={query}#songs"
-_RADIO_URL = "https://www.youtube.com/watch?v={video}&list=RD{video}"
+
+# Mixes — YouTube's ``RD…`` lists — are stations rather than stored playlists,
+# and YouTube serves them only from a watch URL: ``/playlist?list=RD…`` is
+# answered with "This playlist type is unviewable". The seed video is therefore
+# part of a mix's address rather than a detail of how a host copied the link,
+# which is the whole reason a mix needs its own template here.
+#
+# ``RDCLAK`` ids are the exception: those are editorial playlists, fixed for
+# everyone, and behave like any other list.
+_MIX_URL = "https://www.youtube.com/watch?v={video}&list={listing}"
+_DYNAMIC_MIX_RE = re.compile(r"^RD(?!CLAK)", re.IGNORECASE)
 
 
 class YouTubeError(RuntimeError):
@@ -135,6 +145,11 @@ def parse_playlist_url(value: str) -> str | None:
     YouTube Music is where a host copies a link when they mean *this record* —
     both the shared ``?list=OLAK5uy_…`` form and the ``/browse/MPREb_…`` one
     the address bar shows on an album page.
+
+    A mix keeps its seed video, because without one there is no address that
+    resolves: see :data:`_MIX_URL`. A mix link copied from somewhere that shows
+    no video — ``/playlist?list=RD…`` — therefore names nothing fetchable and
+    is rejected here rather than turned into a URL that always fails.
     """
     value = (value or "").strip()
     if not value:
@@ -152,10 +167,43 @@ def parse_playlist_url(value: str) -> str | None:
             return None
         return f"https://music.youtube.com/browse/{album}"
 
-    playlist = parse_qs(parsed.query).get("list", [""])[0]
+    query = parse_qs(parsed.query)
+    playlist = query.get("list", [""])[0]
     if not _LIST_RE.match(playlist):
         return None
+
+    if _DYNAMIC_MIX_RE.match(playlist):
+        seed = query.get("v", [""])[0]
+        if not _ID_RE.match(seed):
+            return None
+        return _MIX_URL.format(video=seed, listing=playlist)
+
     return f"https://www.youtube.com/playlist?list={playlist}"
+
+
+def _mix_listing(value: str) -> str:
+    """The ``RD…`` id ``value`` names, or "" if it names no mix at all."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+
+    found = _youtube_url(value)
+    listing = parse_qs(found[1].query).get("list", [""])[0] if found else value
+    return listing if _LIST_RE.match(listing) and _DYNAMIC_MIX_RE.match(listing) else ""
+
+
+def is_dynamic_mix(value: str) -> bool:
+    """True if ``value`` names a station rather than a fixed playlist."""
+    return bool(_mix_listing(value))
+
+
+def is_seedless_mix(value: str) -> bool:
+    """True for a mix link with no video in it, which nothing can resolve.
+
+    The one case a host has to fix themselves: copying a mix from a page that
+    shows no video loses the seed, and the seed is half the address.
+    """
+    return bool(_mix_listing(value)) and parse_playlist_url(value) is None
 
 
 def _metadata_key(youtube_id: str) -> str:
@@ -742,41 +790,143 @@ async def radio_candidates(
     limit: int = 25,
     ttl_s: int = 6 * 3600,
 ) -> list[SearchCandidate]:
-    """YouTube's radio mix for a track — songs that go with this one."""
+    """YouTube's radio mix for a track — songs that go with this one.
+
+    Unbounded, unlike a host's mix: re-seeding from what it returns keeps
+    turning up material long after a station has run out of it. This is the
+    pool that lets a room play until somebody stops it.
+    """
     if not _ID_RE.match(youtube_id):
         return []
-    url = _RADIO_URL.format(video=youtube_id)
+    url = _MIX_URL.format(video=youtube_id, listing=f"RD{youtube_id}")
     pool = await _cached_candidates(redis, _radio_key(youtube_id), url, limit, ttl_s)
     # The mix always opens with the seed itself.
     return [candidate for candidate in pool if candidate.youtube_id != youtube_id]
 
 
+# --- Mixes -------------------------------------------------------------------
+# One fetch of a mix returns a *window* onto the station — the tracks around
+# whichever video seeded it — and re-seeding from something that window gave
+# back returns a different window of the same station. Walking it that way
+# reaches around sixty tracks before the windows start repeating: a mix is
+# bounded, which makes it a pool rather than a feed, and coherent, which is why
+# it is worth having at all.
+#
+# The walk is not something one request can wait for — five hops is five
+# extractions and the better part of a minute. So a refresh takes a single hop
+# and merges it into what earlier refreshes found: the pool climbs to its
+# ceiling over a room's evening rather than inside one autoplay pick, and no
+# pick ever pays more than one extraction for it.
+MIX_WINDOW = 50
+MIX_POOL_CAP = 200
+MIX_POOL_TTL_S = 24 * 3600
+MIX_REFRESH_S = 900
+
+
+def _mix_key(url: str) -> str:
+    return f"streamchen:mix:v1:{url}"
+
+
+def _mix_fresh_key(url: str) -> str:
+    return f"streamchen:mixfresh:v1:{url}"
+
+
+def _mix_parts(url: str) -> tuple[str, str] | None:
+    """(seed video, list id) for a canonical mix URL, or None if it is not one."""
+    found = _youtube_url(url)
+    if found is None:
+        return None
+    query = parse_qs(found[1].query)
+    seed, listing = query.get("v", [""])[0], query.get("list", [""])[0]
+    if not _ID_RE.match(seed) or not _DYNAMIC_MIX_RE.match(listing):
+        return None
+    return seed, listing
+
+
+def _next_hop(pool: list[SearchCandidate], walked: list[str], seed: str) -> tuple[str, list[str]]:
+    """Where to seed the next window from, and the walk that follows.
+
+    The frontier is whatever the pool holds that has not been a seed yet.
+    Seeding twice from the same place asks the same question twice, and a lap
+    that runs out of new vantage points starts again from the host's own seed —
+    which is also how a station that has drifted since yesterday gets noticed.
+    """
+    walked_set = set(walked)
+    for candidate in pool:
+        if candidate.youtube_id not in walked_set:
+            return candidate.youtube_id, [*walked, candidate.youtube_id]
+    return seed, [seed]
+
+
+async def mix_candidates(
+    redis: Redis,
+    url: str,
+    limit: int = MIX_WINDOW,
+    ttl_s: int = MIX_POOL_TTL_S,
+    refresh_s: int = MIX_REFRESH_S,
+) -> list[SearchCandidate]:
+    """The station behind a mix URL, widened by one window per refresh."""
+    parts = _mix_parts(url)
+    if parts is None:
+        raise YouTubeError("that mix link names no video to start from")
+    seed, listing = parts
+
+    key = _mix_key(url)
+    pool: list[SearchCandidate] = []
+    walked: list[str] = []
+    cached = await redis.get(key)
+    if cached:
+        if isinstance(cached, bytes):
+            cached = cached.decode("utf-8")
+        try:
+            stored = json.loads(cached)
+            pool = [SearchCandidate(**row) for row in stored["pool"]]
+            walked = list(stored["walked"])
+        except (json.JSONDecodeError, TypeError, KeyError):
+            pool, walked = [], []  # poisoned entry; walk again from the seed
+
+    # Already widened recently. The next hop is the next refresh's business.
+    if pool and await redis.get(_mix_fresh_key(url)):
+        return pool
+
+    hop, walked = _next_hop(pool, walked, seed)
+    try:
+        entries = await asyncio.to_thread(
+            _flat_entries, _MIX_URL.format(video=hop, listing=listing), limit
+        )
+    except Exception as exc:  # yt-dlp raises its own hierarchy
+        if pool:
+            # A pool that already has songs in it outranks a hop that failed:
+            # the room keeps playing and the walk resumes at the next refresh.
+            logger.info("mix %s: hop from %s failed (%s); keeping %d", url, hop, exc, len(pool))
+            await redis.set(_mix_fresh_key(url), "1", ex=refresh_s)
+            return pool
+        raise YouTubeError(str(exc)[:200]) from exc
+
+    seen = {candidate.youtube_id for candidate in pool}
+    for entry in entries:
+        candidate = _candidate_from_entry(entry)
+        if candidate is not None and candidate.youtube_id not in seen:
+            seen.add(candidate.youtube_id)
+            pool.append(candidate)
+    pool = pool[:MIX_POOL_CAP]
+
+    await redis.set(key, json.dumps({"pool": [asdict(c) for c in pool], "walked": walked}), ex=ttl_s)
+    await redis.set(_mix_fresh_key(url), "1", ex=refresh_s)
+    return pool
+
+
 async def playlist_candidates(
     redis: Redis, url: str, limit: int = 100, ttl_s: int = 3600
 ) -> list[SearchCandidate]:
-    """What is behind a playlist URL, for a host-supplied radio playlist."""
+    """What is behind a playlist URL, for a host-supplied radio playlist.
+
+    A mix is one of the things a host pastes here, and it is a pool like any
+    other once it is fetched — only the fetching differs.
+    """
+    if is_dynamic_mix(url):
+        return await mix_candidates(redis, url)
     return await _cached_candidates(redis, _playlist_key(url), url, limit, ttl_s)
-
-
-# YouTube's dynamic mixes: a *station* rather than a list, generated per viewer
-# and re-generated per request. A host pastes one because their browser showed
-# them a coherent playlist of it; the server, which has no account and no
-# listening history, is served something else entirely and something different
-# again on the next fetch. The link is not broken — it just does not name the
-# same thing here that it named there, which is worth saying out loud rather
-# than leaving a host to wonder why their rock playlist plays film scores.
-#
-# RDCLAK ids are the exception: those are editorial playlists, fixed for
-# everyone, and behave like any other list.
-_DYNAMIC_MIX_RE = re.compile(r"^RD(?!CLAK)", re.IGNORECASE)
-
-
-def is_dynamic_mix(value: str) -> bool:
-    """True if ``value`` names a per-viewer mix rather than a fixed playlist."""
-    url = parse_playlist_url(value) or value
-    found = _youtube_url(url) if "//" in url else None
-    listing = parse_qs(found[1].query).get("list", [""])[0] if found else url.strip()
-    return bool(listing) and bool(_DYNAMIC_MIX_RE.match(listing))
 
 
 async def resolve_stream_url(redis: Redis, youtube_id: str, ttl_s: int = 300) -> str:

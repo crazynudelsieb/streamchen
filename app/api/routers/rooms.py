@@ -48,6 +48,7 @@ from app.service import (
     serialize_track,
     stream_url,
 )
+from app.youtube import is_seedless_mix
 
 router = APIRouter(tags=["rooms"])
 
@@ -159,7 +160,19 @@ async def update(
         if changes.get(field) is not None:
             setattr(room, field, changes[field])
     if "fallback_playlist" in changes:
-        room.fallback_playlist = (changes["fallback_playlist"] or "").strip() or None
+        field = (changes["fallback_playlist"] or "").strip()
+        # A mix link copied from a page showing no video has lost its seed, and
+        # nothing can resolve it. Saying so beats storing it and leaving a host
+        # to wonder why the radio never plays any of it.
+        seedless = [chunk for chunk in field.replace(",", " ").split() if is_seedless_mix(chunk)]
+        if seedless:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "That mix link has no song in it. Open the mix, start a track, "
+                "and copy the link from there — a mix is only playable from "
+                "somewhere inside it.",
+            )
+        room.fallback_playlist = field or None
 
     await db.flush()
 
