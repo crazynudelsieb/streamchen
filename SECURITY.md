@@ -53,7 +53,11 @@ Before publishing or deploying:
 - Set `SECURE_COOKIES=true` behind HTTPS
 - Keep `TRUSTED_PROXY_COUNT` aligned with your proxy chain
 - Keep `.env` private (commit `.env.example` only)
-- Keep base images and Python dependencies up to date
+- Keep base images and Python dependencies up to date. CI scans both on every
+  push (`pip-audit`, and Trivy over all three images) but reports rather than
+  gates: a CVE is published on somebody else's schedule, and a red build on an
+  unchanged tree would block the fix for whatever *is* broken from shipping. A
+  green run therefore does not mean no known CVEs — read the two scan jobs.
 - Restrict infrastructure access to Postgres/Redis/Icecast private networks
 
 ## Known Tradeoffs
