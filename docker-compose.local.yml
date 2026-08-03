@@ -19,6 +19,7 @@ services:
       # Icecast is published directly here; in production Traefik puts it
       # behind /stream on the same host.
       - ICECAST_PUBLIC_URL=http://localhost:8000
+      - ICECAST_SOURCE_PASSWORD=hackme
       - LOG_LEVEL=DEBUG
       - SECURE_COOKIES=false
     depends_on:

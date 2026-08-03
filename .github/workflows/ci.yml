@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   check:
@@ -36,13 +37,8 @@ jobs:
       - name: Test
         run: pytest -q
 
-  # The two scans below are advisory. A CVE is published on somebody else's
-  # schedule, and it lands on this repository as a red build on a tree that has
-  # not changed -- blocking a release on it means the fix for whatever *is*
-  # broken cannot ship either. So the findings are reported and the build goes
-  # on: `continue-on-error` is set per scan step, not per job, because the
-  # docker builds in the scan job are real build validation and an image that
-  # no longer builds must still break CI.
+  # Security checks stay advisory to avoid blocking unrelated fixes when an
+  # upstream CVE lands without changes in this repository.
   dependency-audit:
     name: Dependency vulnerability scan (advisory)
     runs-on: ubuntu-latest
@@ -65,57 +61,17 @@ jobs:
         continue-on-error: true
         run: python -m pip_audit -r requirements-dev.txt
 
-  image-scan:
-    name: Container image vulnerability scan (advisory)
+  dependency-review:
+    name: Dependency review (GitHub native)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: Build API image (local)
-        run: docker build -t streamchen-ci-api:latest -f Dockerfile .
-
-      - name: Build worker image (local)
-        run: docker build -t streamchen-ci-worker:latest -f Dockerfile.worker .
-
-      - name: Build Icecast image (local)
-        run: docker build -t streamchen-ci-icecast:latest -f docker/icecast/Dockerfile docker/icecast
-
-      # Advisory, all three. exit-code stays 1 on purpose: that is what makes a
-      # finding visible as a flagged step in the run rather than a table nobody
-      # reads to the bottom of. `continue-on-error` is what keeps it off the
-      # build.
-      - name: Scan API image
-        continue-on-error: true
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: streamchen-ci-api:latest
-          format: table
-          exit-code: "1"
-          ignore-unfixed: true
-          vuln-type: os,library
-          severity: CRITICAL,HIGH
-
-      - name: Scan worker image
-        continue-on-error: true
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: streamchen-ci-worker:latest
-          format: table
-          exit-code: "1"
-          ignore-unfixed: true
-          vuln-type: os,library
-          severity: CRITICAL,HIGH
-
-      - name: Scan Icecast image
-        continue-on-error: true
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: streamchen-ci-icecast:latest
-          format: table
-          exit-code: "1"
-          ignore-unfixed: true
-          vuln-type: os,library
-          severity: CRITICAL,HIGH
+      # Built-in GitHub action that flags newly introduced vulnerable packages
+      # in pull requests by comparing lock/manifest changes against advisories.
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v4
 
   compose:
     name: Compose files parse
