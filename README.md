@@ -126,6 +126,23 @@ promotions can reorder underneath it. The guess is checked against what the
 worker actually claims, so being wrong costs a cold start and can never play
 the wrong song.
 
+### How everything arrives at the same volume
+
+Tracks come from wherever a listener found them, so their levels have nothing
+to do with each other: a loudness-war single, a quiet live upload, a news
+bulletin at a broadcaster's house level. Untouched they would arrive up to
+20 dB apart, and the only remedy a listener has is the one volume control in
+their browser — which they would then have to move again at the next handover.
+
+So every source is measured against a fixed target before it plays
+([`app/worker/loudness.py`](app/worker/loudness.py)). ffmpeg's `loudnorm` can
+level in a single pass, but only by adapting as it goes: it cannot know how
+loud a track is until it has heard it. Measuring first and handing the numbers
+to the playback pass makes the correction one fixed gain across the whole
+track, which is inaudible as an effect — and the measurement is free, because
+the lookahead already has the file on disk minutes before it is due. A cold
+start, where there was no such window, falls back to the one-pass filter.
+
 ### How the news gets on air without interrupting anything
 
 A bulletin is audio the room did not queue, so it is the one thing that could
@@ -262,6 +279,9 @@ annotated list. The ones worth knowing:
 | `CHAT_RATE_LIMIT` / `CHAT_RATE_WINDOW_S` | `6` / `10` | Chat messages. |
 | `SHADOW_BAN_MINUTES` | `15` | How long a flooder is silently muted. |
 | `AUDIO_CACHE_BUDGET_BYTES` | `1 GiB` | Hard cap on the temporary cache. |
+| `AUDIO_NORMALIZE` | `true` | Level every track and bulletin to one loudness. |
+| `AUDIO_TARGET_LUFS` | `-14` | The target it levels to; roughly what YouTube uses itself. |
+| `AUDIO_TARGET_LRA` | `20` | Loudness range past which levelling compresses instead of gain-matching. |
 | `NEWS_FEED_URL` | ORF Ö1 Journale | Feed the hourly bulletin comes from; blank switches news off everywhere. |
 | `NEWS_MAX_DURATION_S` | `660` | Longest edition that counts as a bulletin. |
 | `NEWS_MAX_AGE_H` | `24` | Past this, the newest edition is no longer news and none plays. |

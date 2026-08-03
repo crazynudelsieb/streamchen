@@ -49,6 +49,7 @@ from app.models import (
 from app.service import playable_tracks
 from app.worker.cache import AudioCache
 from app.worker.download import download_audio, download_clip
+from app.worker.loudness import Measurements
 from app.worker.pipeline import (
     decoder_command,
     encoder_command,
@@ -198,6 +199,9 @@ class RoomPlayer:
         self._wake = asyncio.Event()
         self._current_track_id: uuid.UUID | None = None
         self._downloads = Downloads(cache)
+        # How loud each cached file turned out to be. Filled in by the
+        # lookahead while something else is on air, read when a decoder opens.
+        self._loudness = Measurements(settings)
         self._lookahead: asyncio.Task | None = None
         self._prepared: PreparedTrack | None = None
 
@@ -255,6 +259,7 @@ class RoomPlayer:
             await self._discard_prepared()
             await self._discard_news()
             self._downloads.abandon()
+            self._loudness.abandon()
             await self._stop_encoder()
             await self._requeue_current()
             await events.set_now_playing(self.redis, self.room_id, None)
@@ -448,6 +453,12 @@ class RoomPlayer:
             return
 
         self.cache.enforce_budget(keep=self.protected_keys)
+        # Before the bulletin counts as ready, so the boundary never picks up a
+        # clip that has not been levelled yet. A broadcaster's idea of how loud
+        # a news bulletin is has nothing to do with the music around it, which
+        # makes this the handover a listener would otherwise reach for the
+        # volume at.
+        await self._loudness.measure(bulletin.cache_key, path)
         self._news_ready = ReadyBulletin(bulletin=bulletin, path=path)
         logger.info("room %s: news ready (%s)", self.token, bulletin.title)
 
@@ -460,7 +471,7 @@ class RoomPlayer:
         # who turned news off in the meantime gets their music.
         async with self.sessionmaker() as db:
             if not await news.claim(db, self.room_id, bulletin):
-                self.cache.release(bulletin.cache_key)
+                self._release(bulletin.cache_key)
                 self._news_key = None
                 return
 
@@ -469,7 +480,7 @@ class RoomPlayer:
         self._written = 0
         self._duration_s = bulletin.duration_s
 
-        decoder = await self._open_decoder(ready.path)
+        decoder = await self._open_decoder(ready.path, bulletin.cache_key)
         started = datetime.now(UTC).timestamp()
 
         await events.set_now_playing(
@@ -499,7 +510,7 @@ class RoomPlayer:
             await self._stop_lookahead()
             # Concept §12 applies to a bulletin like anything else: the audio
             # does not survive playback.
-            self.cache.release(bulletin.cache_key)
+            self._release(bulletin.cache_key)
             self._news_key = None
             self._duration_s = 0
             self._written = 0
@@ -516,7 +527,7 @@ class RoomPlayer:
         key = self._news_key or (ready.bulletin.cache_key if ready is not None else None)
         self._news_key = None
         if key:
-            self.cache.release(key)
+            self._release(key)
 
     async def _peek_next(self) -> dict | None:
         """What ``_claim_next_track`` would take, without taking it."""
@@ -596,7 +607,7 @@ class RoomPlayer:
         # shielded, and the next tick waits on the same task rather than
         # starting the fetch again from nothing.
         await self._stop_lookahead()
-        self.cache.release(track["youtube_id"])
+        self._release(track["youtube_id"])
         await self._finish(track["id"], STATE_SKIPPED if skipped else STATE_PLAYED)
         # Deliberately no event here. The next track's SONG_STARTED covers this
         # one ending, which means no client ever refetches the room during the
@@ -625,7 +636,13 @@ class RoomPlayer:
             self.current_youtube_id = None
             return None
 
-        return await self._open_decoder(path)
+        # Measured here rather than skipped. Getting this far means a cold
+        # start — a hole in the broadcast that silence is already covering — and
+        # the room's first song arriving at a different level than everything
+        # after it is precisely what a listener notices. A track the lookahead
+        # already measured costs nothing: the answer is waiting.
+        await self._while_feeding(self._loudness.measure(track["youtube_id"], path))
+        return await self._open_decoder(path, track["youtube_id"])
 
     async def _pump(self, decoder: asyncio.subprocess.Process, entry_id: str) -> bool:
         """Decode into the encoder. Returns True if it was skipped.
@@ -750,10 +767,19 @@ class RoomPlayer:
                 track.error = error[:200]
             await db.commit()
 
+    def _release(self, key: str) -> None:
+        """Drop a finished entry's audio and what was measured about it. The
+        two belong together: the numbers describe that file and nothing else."""
+        self.cache.release(key)
+        self._loudness.forget(key)
+
     # --- Decoders --------------------------------------------------------
-    async def _open_decoder(self, path: Path) -> asyncio.subprocess.Process:
+    async def _open_decoder(self, path: Path, key: str) -> asyncio.subprocess.Process:
+        """A decoder for one cached file, levelled with whatever was measured
+        about it. Nothing measured is not a reason to wait for it here: the
+        filter has a standing-start mode for exactly that."""
         return await asyncio.create_subprocess_exec(
-            *decoder_command(self.settings, str(path)),
+            *decoder_command(self.settings, str(path), self._loudness.known(key)),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -835,7 +861,8 @@ class RoomPlayer:
 
         self.next_youtube_id = upcoming["youtube_id"]
 
-        if not self.cache.has(upcoming["youtube_id"]):
+        path = self.cache.find(upcoming["youtube_id"])
+        if path is None:
             try:
                 await self._downloads.fetch(upcoming["youtube_id"], keep=self.protected_keys)
             except asyncio.CancelledError:
@@ -847,14 +874,19 @@ class RoomPlayer:
                 )
             return
 
+        # The whole reason the levelling can be a fixed gain rather than a
+        # filter feeling its way to the target: measured here, minutes before
+        # the track is due, while something else is on air. At the boundary
+        # this would be a gap; here it is a few seconds of a CPU nobody is
+        # waiting on.
+        await self._loudness.measure(upcoming["youtube_id"], path)
+
         if self._prepared is None and self._remaining_s() <= PRESPAWN_LEAD_S:
-            path = self.cache.find(upcoming["youtube_id"])
-            if path is not None:
-                self._prepared = PreparedTrack(
-                    track_id=upcoming["id"],
-                    youtube_id=upcoming["youtube_id"],
-                    decoder=await self._open_decoder(path),
-                )
+            self._prepared = PreparedTrack(
+                track_id=upcoming["id"],
+                youtube_id=upcoming["youtube_id"],
+                decoder=await self._open_decoder(path, upcoming["youtube_id"]),
+            )
 
     async def _take_prepared(self, track_id: uuid.UUID) -> PreparedTrack | None:
         """The warmed-up decoder, but only for the track that was claimed.
