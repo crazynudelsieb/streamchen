@@ -36,8 +36,15 @@ jobs:
       - name: Test
         run: pytest -q
 
+  # The two scans below are advisory. A CVE is published on somebody else's
+  # schedule, and it lands on this repository as a red build on a tree that has
+  # not changed -- blocking a release on it means the fix for whatever *is*
+  # broken cannot ship either. So the findings are reported and the build goes
+  # on: `continue-on-error` is set per scan step, not per job, because the
+  # docker builds in the scan job are real build validation and an image that
+  # no longer builds must still break CI.
   dependency-audit:
-    name: Dependency vulnerability scan
+    name: Dependency vulnerability scan (advisory)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -53,11 +60,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pip-audit
 
+      # Advisory: a finding is printed and flagged, and does not fail the run.
       - name: Audit dependencies
+        continue-on-error: true
         run: python -m pip_audit -r requirements-dev.txt
 
   image-scan:
-    name: Container image vulnerability scan
+    name: Container image vulnerability scan (advisory)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -71,7 +80,12 @@ jobs:
       - name: Build Icecast image (local)
         run: docker build -t streamchen-ci-icecast:latest -f docker/icecast/Dockerfile docker/icecast
 
+      # Advisory, all three. exit-code stays 1 on purpose: that is what makes a
+      # finding visible as a flagged step in the run rather than a table nobody
+      # reads to the bottom of. `continue-on-error` is what keeps it off the
+      # build.
       - name: Scan API image
+        continue-on-error: true
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: streamchen-ci-api:latest
@@ -82,6 +96,7 @@ jobs:
           severity: CRITICAL,HIGH
 
       - name: Scan worker image
+        continue-on-error: true
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: streamchen-ci-worker:latest
@@ -92,6 +107,7 @@ jobs:
           severity: CRITICAL,HIGH
 
       - name: Scan Icecast image
+        continue-on-error: true
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: streamchen-ci-icecast:latest
