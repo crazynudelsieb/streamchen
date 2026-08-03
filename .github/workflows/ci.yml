@@ -71,7 +71,7 @@ jobs:
       # Built-in GitHub action that flags newly introduced vulnerable packages
       # in pull requests by comparing lock/manifest changes against advisories.
       - name: Review dependency changes
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@v5
 
   compose:
     name: Compose files parse
