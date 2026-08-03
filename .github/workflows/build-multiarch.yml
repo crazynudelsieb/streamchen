@@ -46,6 +46,12 @@ jobs:
   # Nothing is published from a tree that doesn't lint and pass its tests.
   test:
     uses: ./.github/workflows/ci.yml
+    # A called workflow can never hold more than its caller grants, and the
+    # write scopes above are for publishing, not for the gate. So the gate gets
+    # its own read-only set, matching what ci.yml declares for itself.
+    permissions:
+      contents: read
+      pull-requests: read
 
   build-and-push:
     needs: test
