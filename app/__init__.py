@@ -13,4 +13,4 @@ computed by exactly the same code.
 # Single source of truth for the released version. The release workflow stamps
 # this from the git tag it is publishing, and commits it alongside that tag, so
 # a running instance always names a version that actually shipped.
-__version__ = "0.1.3"
+__version__ = "0.1.5"
