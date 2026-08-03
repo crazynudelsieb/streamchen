@@ -10,7 +10,7 @@ import uuid
 
 import fakeredis.aioredis
 import pytest
-from starlette.testclient import TestClient
+from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app.api import create_app

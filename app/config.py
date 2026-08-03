@@ -132,7 +132,7 @@ class Settings:
     # --- Icecast / playback -------------------------------------------
     icecast_host: str = "icecast"
     icecast_port: int = 8000
-    icecast_source_password: str = "hackme"
+    icecast_source_password: str = ""
     icecast_public_url: str = ""
     icecast_bitrate_kbps: int = 128
     audio_sample_rate: int = 44100
@@ -231,7 +231,7 @@ class Settings:
             news_max_bytes=_int("NEWS_MAX_BYTES", 32 * 1024 * 1024),
             icecast_host=_str("ICECAST_HOST", "icecast"),
             icecast_port=_int("ICECAST_PORT", 8000),
-            icecast_source_password=_str("ICECAST_SOURCE_PASSWORD", "hackme"),
+            icecast_source_password=_require("ICECAST_SOURCE_PASSWORD"),
             icecast_public_url=_str("ICECAST_PUBLIC_URL", ""),
             icecast_bitrate_kbps=_int("ICECAST_BITRATE_KBPS", 128),
             ffmpeg_binary=_str("FFMPEG_BINARY", "ffmpeg"),
