@@ -24,6 +24,10 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# What a download in flight is called, until it is complete and renamed
+# (app/worker/download.py).
+PARTIAL_SUFFIX = ".part"
+
 
 @dataclass
 class AudioCache:
@@ -54,9 +58,18 @@ class AudioCache:
 
     # --- Lookups ---------------------------------------------------------
     def find(self, key: str) -> Path | None:
-        """The cached file for a track, whatever extension it landed with."""
+        """The cached file for a track, whatever extension it landed with.
+
+        A download in flight is not one of them. Both downloaders write to
+        ``<key>.part`` first, deliberately sharing the stem so the sweeps spare
+        the partial file — but one worker serves several rooms out of this
+        directory, so the room next door can ask for a track while another
+        room's download of it is still running, and half a file is not
+        something to hand back as cached: it decodes to a truncated song, and
+        anything measured from it describes audio nobody will hear.
+        """
         for path in sorted(self.directory.glob(f"{key}.*")):
-            if path.is_file():
+            if path.is_file() and path.suffix != PARTIAL_SUFFIX:
                 return path
         return None
 

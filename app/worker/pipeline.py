@@ -10,6 +10,10 @@ one flag is the whole pacing mechanism: the decoder blocks on a full pipe
 instead of racing ahead, and when nothing is queued the worker writes silence
 at the same rate, keeping the mount alive and every listener connected.
 
+The decoder is also where each track is levelled to a common loudness
+(app/worker/loudness.py) — it is the only stage that sees one track at a time,
+which is what levelling has to be done per.
+
 Command construction is kept separate from process handling so it can be
 tested without ffmpeg installed.
 """
@@ -17,6 +21,7 @@ tested without ffmpeg installed.
 from __future__ import annotations
 
 from app.config import Settings
+from app.worker.loudness import Loudness, normalize_filter
 
 
 def icecast_url(settings: Settings, mount: str) -> str:
@@ -51,8 +56,16 @@ def encoder_command(settings: Settings, mount: str, station_name: str) -> list[s
     ]
 
 
-def decoder_command(settings: Settings, source: str) -> list[str]:
-    """Decode one track (local file or URL) to the encoder's PCM format."""
+def decoder_command(
+    settings: Settings, source: str, measured: Loudness | None = None
+) -> list[str]:
+    """Decode one track (local file or URL) to the encoder's PCM format.
+
+    ``measured`` is what the analysis pass found out about this file, when
+    there was time to run one. Without it the track is still levelled, just
+    from a standing start — see ``loudness.normalize_filter``.
+    """
+    levelling = ["-af", normalize_filter(settings, measured)] if settings.audio_normalize else []
     return [
         settings.ffmpeg_binary,
         "-hide_banner",
@@ -60,6 +73,7 @@ def decoder_command(settings: Settings, source: str) -> list[str]:
         "-nostdin",
         "-i", source,
         "-vn",
+        *levelling,
         "-f", "s16le",
         "-ar", str(settings.audio_sample_rate),
         "-ac", str(settings.audio_channels),

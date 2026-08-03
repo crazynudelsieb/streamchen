@@ -15,6 +15,7 @@ import urllib.request
 from pathlib import Path
 
 from app.news import USER_AGENT, NewsError
+from app.worker.cache import PARTIAL_SUFFIX
 from app.youtube import YouTubeError
 
 logger = logging.getLogger(__name__)
@@ -63,9 +64,10 @@ def download_audio(youtube_id: str, directory: Path) -> Path:
         return path
 
     # yt-dlp may have remuxed into a different extension than the template
-    # predicted; the id is still the stem.
+    # predicted; the id is still the stem. Its own partial files share that
+    # stem too, and one of those is not a download that finished.
     for candidate in sorted(directory.glob(f"{youtube_id}.*")):
-        if candidate.is_file():
+        if candidate.is_file() and candidate.suffix != PARTIAL_SUFFIX:
             return candidate
 
     raise YouTubeError("downloaded file not found")
@@ -89,10 +91,10 @@ def download_clip(url: str, key: str, directory: Path, max_bytes: int) -> Path:
     Written to ``<key>.part`` first. That shares the stem, so the sweeps spare
     the partial file the same way they spare the finished one, and a download
     that dies half way through leaves nothing anyone can mistake for playable
-    audio.
+    audio — ``AudioCache.find`` will not hand a ``.part`` back to anybody.
     """
     directory.mkdir(parents=True, exist_ok=True)
-    partial = directory / f"{key}.part"
+    partial = directory / f"{key}{PARTIAL_SUFFIX}"
     path = directory / f"{key}{_clip_suffix(url)}"
 
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.config import Settings
+from app.worker.loudness import Loudness
 from app.worker.pipeline import (
     bytes_per_second,
     decoder_command,
@@ -59,6 +60,28 @@ def test_the_decoder_emits_exactly_what_the_encoder_expects():
 
 def test_the_decoder_drops_video():
     assert "-vn" in decoder_command(make_settings(), "/tmp/track.webm")
+
+
+def test_the_decoder_levels_every_track_to_the_same_loudness():
+    """The stage that sees one track at a time is the only one that can."""
+    command = decoder_command(make_settings(), "/tmp/track.webm")
+
+    assert command[command.index("-af") + 1].startswith("loudnorm=")
+
+
+def test_the_decoder_uses_what_the_analysis_pass_measured():
+    measured = Loudness(
+        input_i=-8.42, input_tp=0.35, input_lra=4.2, input_thresh=-18.7, target_offset=-0.12
+    )
+    command = decoder_command(make_settings(), "/tmp/track.webm", measured)
+
+    assert "measured_I=-8.42" in command[command.index("-af") + 1]
+
+
+def test_levelling_can_be_turned_off():
+    command = decoder_command(make_settings(audio_normalize=False), "/tmp/track.webm")
+
+    assert "-af" not in command
 
 
 def test_the_source_password_is_only_in_the_icecast_url():

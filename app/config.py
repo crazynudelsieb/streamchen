@@ -33,6 +33,11 @@ def _int(key: str, default: int) -> int:
     return int(raw) if raw else default
 
 
+def _float(key: str, default: float) -> float:
+    raw = os.environ.get(key, "").strip()
+    return float(raw) if raw else default
+
+
 def _bool(key: str, default: bool) -> bool:
     raw = os.environ.get(key, "").strip().lower()
     if not raw:
@@ -141,6 +146,30 @@ class Settings:
     worker_poll_interval_s: int = 2
     worker_lock_ttl_s: int = 30
 
+    # --- Loudness -----------------------------------------------------
+    # Tracks arrive at whatever level they were uploaded at, so they are all
+    # levelled to one target (app/worker/loudness.py). -14 LUFS because that is
+    # roughly what YouTube normalises to itself: most tracks then need a small
+    # correction, which is the case the levelling handles most transparently.
+    audio_normalize: bool = True
+    audio_target_lufs: float = -14.0
+    # True-peak ceiling, lower than the -1 dBTP broadcast convention because
+    # what leaves here is a 128 kbit MP3 and lossy encoding overshoots.
+    audio_target_tp: float = -1.5
+    # Loudness range, and the knob that decides whether levelling stays
+    # levelling. loudnorm applies the measured correction as one fixed gain
+    # only while a track's own range fits inside this; past it, it compresses
+    # the range to fit and the track audibly changes character. The broadcast
+    # convention of 11 is under what ordinary music measures -- a mildly
+    # dynamic mix comes in around 12-13 LU -- so at 11 the common case is the
+    # compressed one, which is not what levelling was for. 20 leaves real music
+    # alone and still catches the extremes, where a shared radio does want the
+    # quiet half of the track pulled up to where everyone can hear it.
+    audio_target_lra: float = 20.0
+    # The analysis pass decodes the whole file as fast as it can, so this is
+    # only here to catch the one that never finishes.
+    audio_measure_timeout_s: int = 120
+
     # --- Footer / legal (shared appchen standard) ----------------------
     contact_email: str = ""
     contact_mastodon: str = ""
@@ -236,6 +265,11 @@ class Settings:
             icecast_bitrate_kbps=_int("ICECAST_BITRATE_KBPS", 128),
             ffmpeg_binary=_str("FFMPEG_BINARY", "ffmpeg"),
             worker_poll_interval_s=_int("WORKER_POLL_INTERVAL_S", 2),
+            audio_normalize=_bool("AUDIO_NORMALIZE", True),
+            audio_target_lufs=_float("AUDIO_TARGET_LUFS", -14.0),
+            audio_target_tp=_float("AUDIO_TARGET_TP", -1.5),
+            audio_target_lra=_float("AUDIO_TARGET_LRA", 20.0),
+            audio_measure_timeout_s=_int("AUDIO_MEASURE_TIMEOUT_S", 120),
             contact_email=_str("CONTACT_EMAIL"),
             contact_mastodon=_str("CONTACT_MASTODON"),
             contact_github=_str("CONTACT_GITHUB"),
