@@ -20,9 +20,10 @@ Part of the **appchen** family, alongside
   candidates and ranks them, so "artist - song" returns *that recording* rather
   than a live cut and the rest of the artist's catalogue.
 - **A radio that keeps going.** When the queue runs dry the room keeps playing:
-  from the host's fallback playlist if they set one, otherwise from YouTube's
-  mix for whatever played last. Only while somebody is listening, and always
-  behind any real request.
+  from the host's fallback playlist if they set one — anywhere in it, so the
+  same list is a different evening each time — otherwise from YouTube's mix for
+  whatever played last. Only while somebody is listening, and always behind any
+  real request.
 - **Fair scheduling.** Round-robin across submitters: everyone's first song
   plays before anyone's second, however many they queue.
 - **A name if you want one.** Everyone is given a generated nickname on
@@ -30,9 +31,11 @@ Part of the **appchen** family, alongside
   account: the name lives on that room only.
 - **Voting.** Up and down votes decide which of *your* songs plays in your
   turn — they cannot buy you extra turns.
-- **A stream that follows the room.** It starts when somebody arrives and stops
-  when the last listener leaves, so nothing is ever encoded for nobody. A host
-  can also stop it by hand, which overrules that until they start it again —
+- **A stream that follows the room.** A new room is created off the air — the
+  minute after you make one is the minute you spend setting it up — and one
+  button puts it on. From then on it starts when somebody arrives and stops when
+  the last listener leaves, so nothing is ever encoded for nobody. The same
+  button stops it by hand, which overrules that until the host starts it again —
   and stopping the stream never touches the room, the queue or the link.
 - **News on the hour, if the host wants it.** One short bulletin from a podcast
   feed — Austrian ORF Ö1 Journale out of the box — played *after* a song and

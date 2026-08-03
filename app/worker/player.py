@@ -289,9 +289,15 @@ class RoomPlayer:
                     self._wake.set()
                 elif event == events.ROOM_UPDATED:
                     # A setting changed, so what this player last decided about
-                    # the room's news may no longer be what its host wants. Ask
-                    # again at the next opportunity rather than in two minutes.
+                    # the room's news and about what the radio would pick may no
+                    # longer be what its host wants. Ask both again at the next
+                    # opportunity rather than in two minutes — a host who has
+                    # just pasted a radio playlist is watching for it to start,
+                    # and the cooldowns are there to stop *polling*, not to make
+                    # somebody wait out an answer that has already changed.
                     self._news_at = None
+                    self._autoplay_at = None
+                    self._wake.set()
         finally:
             with contextlib.suppress(Exception):
                 await pubsub.unsubscribe(events.channel(self.room_id))

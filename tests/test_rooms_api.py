@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from httpx import AsyncClient
 
+from app import events
 from tests.conftest import watch_url
+from tests.test_worker_wakeup import wake_messages
 
 
 async def test_creating_a_room_returns_a_shareable_link_and_a_one_time_secret(client):
@@ -20,6 +22,29 @@ async def test_creating_a_room_returns_a_shareable_link_and_a_one_time_secret(cl
 async def test_an_unnamed_room_still_gets_a_name(client):
     response = await client.post("/api/rooms", json={"name": "   "})
     assert response.json()["name"] == "streamchen radio"
+
+
+async def test_a_new_room_starts_off_the_air(client):
+    """Creating a room is not broadcasting one. Nothing goes out until the host
+    presses start, which is also what keeps a half-configured room off the
+    air while its link is being copied."""
+    created = (await client.post("/api/rooms", json={"name": "Kitchen Radio"})).json()
+    client.headers["X-Host-Secret"] = created["host_secret"]
+
+    settings = (await client.get(f"/api/rooms/{created['token']}")).json()["settings"]
+
+    assert settings["stream_stopped"] is True
+
+
+async def test_a_new_room_has_the_news_off(client):
+    """A room is music. The hourly bulletin is the one thing on the stream that
+    nobody in the room asked for, so it takes a host asking for it."""
+    created = (await client.post("/api/rooms", json={"name": "Kitchen Radio"})).json()
+    client.headers["X-Host-Secret"] = created["host_secret"]
+
+    settings = (await client.get(f"/api/rooms/{created['token']}")).json()["settings"]
+
+    assert settings["news_enabled"] is False
 
 
 async def test_room_state_is_everything_the_page_needs(client, room):
@@ -88,6 +113,38 @@ async def test_the_host_can_set_a_mix_as_the_radio_playlist(client, room):
 
     assert response.status_code == 200
     assert response.json()["settings"]["fallback_playlist"] == link
+
+
+async def test_saving_a_radio_playlist_asks_for_a_worker(client, room, api):
+    """A host pasting a playlist into a quiet room means "play something".
+
+    The radio only ever runs inside a worker, so a room with no source has
+    nowhere for the list to be played. Waiting for the sweep to notice is the
+    same "I pressed the button and nothing happened" the stream toggle avoids.
+    """
+    pubsub = api.state.redis.pubsub(ignore_subscribe_messages=True)
+    await pubsub.subscribe(events.WAKE_CHANNEL)
+    try:
+        response = await client.patch(
+            f"/api/rooms/{room['token']}",
+            json={"fallback_playlist": "https://www.youtube.com/playlist?list=PLabc"},
+        )
+        assert response.status_code == 200
+        assert await wake_messages(pubsub)
+    finally:
+        await pubsub.aclose()
+
+
+async def test_clearing_the_radio_playlist_asks_for_nothing(client, room, api):
+    """The opposite of "play something": there is nothing to wake up for."""
+    pubsub = api.state.redis.pubsub(ignore_subscribe_messages=True)
+    await pubsub.subscribe(events.WAKE_CHANNEL)
+    try:
+        response = await client.patch(f"/api/rooms/{room['token']}", json={"fallback_playlist": ""})
+        assert response.status_code == 200
+        assert await wake_messages(pubsub, timeout=0.3) == []
+    finally:
+        await pubsub.aclose()
 
 
 async def test_a_mix_link_with_no_song_in_it_is_refused_with_a_reason(client, room):

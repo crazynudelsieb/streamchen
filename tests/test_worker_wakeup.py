@@ -33,12 +33,18 @@ async def listening(api):
     return pubsub
 
 
-async def test_creating_a_room_asks_for_a_worker(client, api):
+async def test_creating_a_room_does_not_ask_for_a_worker(client, api):
+    """A new room is created off the air, so there is nothing to connect yet.
+
+    Waking a worker for it would be a nudge towards a room the sweep skips on
+    purpose. The nudge that matters is the one on the host pressing start, and
+    that is covered in test_stream_control.
+    """
     pubsub = await listening(api)
     try:
         response = await client.post("/api/rooms", json={"name": "Kitchen Radio"})
         assert response.status_code == 201
-        assert await wake_messages(pubsub)
+        assert await wake_messages(pubsub, timeout=0.3) == []
     finally:
         await pubsub.aclose()
 
