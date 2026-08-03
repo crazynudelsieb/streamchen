@@ -239,7 +239,11 @@ def _search_key(query: str) -> str:
 
 
 def _radio_key(youtube_id: str) -> str:
-    return f"streamchen:radio:{youtube_id}"
+    return f"streamchen:radio:v2:{youtube_id}"
+
+
+def _playlist_key(url: str) -> str:
+    return f"streamchen:playlist:v2:{url}"
 
 
 def normalize_query(value: str) -> str:
@@ -283,25 +287,6 @@ def _flat_ids(url: str, limit: int) -> list[str]:
         if _ID_RE.match(candidate) and candidate not in ids:
             ids.append(candidate)
     return ids[:limit]
-
-
-async def _cached_ids(redis: Redis, key: str, url: str, limit: int, ttl_s: int) -> list[str]:
-    cached = await redis.get(key)
-    if cached:
-        if isinstance(cached, bytes):
-            cached = cached.decode("utf-8")
-        try:
-            return json.loads(cached)
-        except json.JSONDecodeError:
-            pass  # poisoned entry; fall through and re-extract
-
-    try:
-        ids = await asyncio.to_thread(_flat_ids, url, limit)
-    except Exception as exc:  # yt-dlp raises its own hierarchy
-        raise YouTubeError(str(exc)[:200]) from exc
-
-    await redis.set(key, json.dumps(ids), ex=ttl_s)
-    return ids
 
 
 # --- Ranking -----------------------------------------------------------------
@@ -511,6 +496,92 @@ def rank_candidates(
     return [candidate for _score, _index, candidate in scored[:limit]]
 
 
+# --- Judging a track with no query ------------------------------------------
+# Search ranks against what somebody typed. A radio pick has nothing to rank
+# against, so these decide the only two questions left: is this a record at
+# all, and is it by somebody the room has just heard.
+
+# Not music. Blunter than the search penalties on purpose — nobody asked for
+# this track, so passing over a good one costs nothing, where playing a film
+# trailer to a room costs the room.
+_NOT_MUSIC = {
+    "trailer": 40.0, "reaction": 40.0, "review": 30.0, "interview": 30.0,
+    "tutorial": 30.0, "lesson": 24.0, "podcast": 34.0, "documentary": 30.0,
+    "gameplay": 44.0, "walkthrough": 44.0, "speedrun": 44.0, "cutscene": 40.0,
+    "montage": 24.0, "asmr": 30.0, "meme": 26.0, "amv": 30.0,
+}
+
+# Music, but written for something else. Not wrong — a host may well want it —
+# only the thing a mix drifts into when it runs out of the genre it started in,
+# which is how a rock room ends up on orchestral cues.
+_INCIDENTAL = {
+    "ost": 22.0, "soundtrack": 22.0, "bgm": 22.0, "theme": 12.0,
+    "orchestral": 12.0, "opening": 14.0, "ending": 14.0,
+}
+
+# 'The Avengers (From "The Avengers")' — music for a film says so in the title.
+_SOURCE_RE = re.compile(r"\bfrom\s+[\"“'(]", re.IGNORECASE)
+
+# Words that describe an upload rather than whoever made the record.
+_CHANNEL_NOISE = re.compile(r"\b(?:official|music|records|topic|channel|band)\b")
+_VEVO_RE = re.compile(r"vevo\b")
+
+
+def artist_key(title: str | None, channel: str | None = None) -> str:
+    """A stable-ish name for whoever a track is by, for keeping a run varied.
+
+    The channel is the better answer where there is one — "Guns N' Roses" — but
+    a flat playlist listing frequently has none, and then the half of the title
+    before the dash is where everybody writes it instead.
+    """
+    name = _VEVO_RE.sub(" ", _CHANNEL_NOISE.sub(" ", _fold(channel)))
+    if not name.strip() and " - " in (title or ""):
+        name = _fold((title or "").split(" - ")[0])
+    return " ".join(name.split())
+
+
+def song_score(candidate: SearchCandidate, max_duration_s: int = 0) -> float:
+    """How much a pool entry looks like a record, with no query to go on.
+
+    Relative, not absolute: it only ever decides between candidates drawn from
+    the same pool, so the numbers matter against each other and nowhere else.
+    """
+    title_tokens = set(_tokens(candidate.title))
+    folded_title = _fold(candidate.title)
+    score = 0.0
+
+    for vocabulary in (_NOT_MUSIC, _INCIDENTAL, _VARIANTS):
+        for word, penalty in vocabulary.items():
+            if word in title_tokens:
+                score -= penalty
+    for phrase, penalty in _VARIANT_PHRASES:
+        if phrase in folded_title:
+            score -= penalty
+    for phrase in _BULK_PHRASES:
+        if phrase in folded_title:
+            score -= 30.0
+    if _DATE_RE.search(candidate.title) or _SOURCE_RE.search(candidate.title):
+        score -= 18.0
+
+    # The catalogue's own upload is the record itself, which is also the one
+    # without the music video's spoken intro and its long fade of credits.
+    if candidate.catalog:
+        score += 14.0
+    if candidate.channel and candidate.channel.casefold().endswith(_TOPIC_SUFFIX):
+        score += 14.0
+    if candidate.verified:
+        score += 4.0
+
+    # A room cannot play what it will refuse to accept, and a 40-second upload
+    # of a 4-minute song is a clip of it.
+    if max_duration_s and candidate.duration_s > max_duration_s:
+        score -= 60.0
+    if 0 < candidate.duration_s < 60:
+        score -= 30.0
+
+    return score
+
+
 def _candidate_from_entry(entry: dict[str, Any]) -> SearchCandidate | None:
     """One flat search entry, or None if it is not a playable video."""
     youtube_id = entry.get("id") or ""
@@ -628,28 +699,84 @@ async def search_music(
     return results
 
 
-async def radio_for(
+# --- Pools -------------------------------------------------------------------
+# A mix or a playlist is not a search: nobody typed a query, so there is nothing
+# to rank *against*. What the flat listing carries is still exactly what a radio
+# pick has to reason about — who it is by, how long it runs, whether it is a
+# song at all — so a pool keeps whole candidates. Reducing it to bare ids threw
+# that away and then paid one extraction per id to get some of it back.
+
+
+async def _cached_candidates(
+    redis: Redis, key: str, url: str, limit: int, ttl_s: int
+) -> list[SearchCandidate]:
+    cached = await redis.get(key)
+    if cached:
+        if isinstance(cached, bytes):
+            cached = cached.decode("utf-8")
+        try:
+            return [SearchCandidate(**row) for row in json.loads(cached)]
+        except (json.JSONDecodeError, TypeError):
+            pass  # poisoned entry; fall through and re-extract
+
+    try:
+        entries = await asyncio.to_thread(_flat_entries, url, limit)
+    except Exception as exc:  # yt-dlp raises its own hierarchy
+        raise YouTubeError(str(exc)[:200]) from exc
+
+    candidates: list[SearchCandidate] = []
+    seen: set[str] = set()
+    for entry in entries:
+        candidate = _candidate_from_entry(entry)
+        if candidate is not None and candidate.youtube_id not in seen:
+            seen.add(candidate.youtube_id)
+            candidates.append(candidate)
+
+    await redis.set(key, json.dumps([asdict(c) for c in candidates]), ex=ttl_s)
+    return candidates
+
+
+async def radio_candidates(
     redis: Redis,
     youtube_id: str,
     limit: int = 25,
     ttl_s: int = 6 * 3600,
-) -> list[str]:
-    """Ids of YouTube's radio mix for a track — songs that go with this one.
-
-    Returned as bare ids: the caller filters against what the room has already
-    played before it is worth paying for metadata.
-    """
+) -> list[SearchCandidate]:
+    """YouTube's radio mix for a track — songs that go with this one."""
     if not _ID_RE.match(youtube_id):
         return []
     url = _RADIO_URL.format(video=youtube_id)
-    ids = await _cached_ids(redis, _radio_key(youtube_id), url, limit, ttl_s)
+    pool = await _cached_candidates(redis, _radio_key(youtube_id), url, limit, ttl_s)
     # The mix always opens with the seed itself.
-    return [candidate for candidate in ids if candidate != youtube_id]
+    return [candidate for candidate in pool if candidate.youtube_id != youtube_id]
 
 
-async def playlist_ids(redis: Redis, url: str, limit: int = 100, ttl_s: int = 3600) -> list[str]:
-    """Ids behind a playlist URL, for a host-supplied fallback playlist."""
-    return await _cached_ids(redis, f"streamchen:playlist:{url}", url, limit, ttl_s)
+async def playlist_candidates(
+    redis: Redis, url: str, limit: int = 100, ttl_s: int = 3600
+) -> list[SearchCandidate]:
+    """What is behind a playlist URL, for a host-supplied radio playlist."""
+    return await _cached_candidates(redis, _playlist_key(url), url, limit, ttl_s)
+
+
+# YouTube's dynamic mixes: a *station* rather than a list, generated per viewer
+# and re-generated per request. A host pastes one because their browser showed
+# them a coherent playlist of it; the server, which has no account and no
+# listening history, is served something else entirely and something different
+# again on the next fetch. The link is not broken — it just does not name the
+# same thing here that it named there, which is worth saying out loud rather
+# than leaving a host to wonder why their rock playlist plays film scores.
+#
+# RDCLAK ids are the exception: those are editorial playlists, fixed for
+# everyone, and behave like any other list.
+_DYNAMIC_MIX_RE = re.compile(r"^RD(?!CLAK)", re.IGNORECASE)
+
+
+def is_dynamic_mix(value: str) -> bool:
+    """True if ``value`` names a per-viewer mix rather than a fixed playlist."""
+    url = parse_playlist_url(value) or value
+    found = _youtube_url(url) if "//" in url else None
+    listing = parse_qs(found[1].query).get("list", [""])[0] if found else url.strip()
+    return bool(listing) and bool(_DYNAMIC_MIX_RE.match(listing))
 
 
 async def resolve_stream_url(redis: Redis, youtube_id: str, ttl_s: int = 300) -> str:
