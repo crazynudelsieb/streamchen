@@ -36,6 +36,71 @@ jobs:
       - name: Test
         run: pytest -q
 
+  dependency-audit:
+    name: Dependency vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pip-audit
+
+      - name: Audit dependencies
+        run: python -m pip_audit -r requirements-dev.txt
+
+  image-scan:
+    name: Container image vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build API image (local)
+        run: docker build -t streamchen-ci-api:latest -f Dockerfile .
+
+      - name: Build worker image (local)
+        run: docker build -t streamchen-ci-worker:latest -f Dockerfile.worker .
+
+      - name: Build Icecast image (local)
+        run: docker build -t streamchen-ci-icecast:latest -f docker/icecast/Dockerfile docker/icecast
+
+      - name: Scan API image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: streamchen-ci-api:latest
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
+      - name: Scan worker image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: streamchen-ci-worker:latest
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
+      - name: Scan Icecast image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: streamchen-ci-icecast:latest
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
   compose:
     name: Compose files parse
     runs-on: ubuntu-latest

@@ -221,8 +221,8 @@ uvicorn app.api.main:app --reload      # pages, API and WebSocket on :8000
 python -m app.worker                   # playback
 ```
 
-Both read the same `.env`. `DATABASE_URL`, `REDIS_URL` and `BASE_URL` are the
-only required variables.
+Both read the same `.env`. `DATABASE_URL`, `REDIS_URL`, `BASE_URL` and
+`ICECAST_SOURCE_PASSWORD` are the required variables.
 
 ### Where things live
 
@@ -252,6 +252,7 @@ annotated list. The ones worth knowing:
 | `DATABASE_URL` | — | Postgres connection string (required). |
 | `REDIS_URL` | — | Redis connection string (required). |
 | `BASE_URL` | — | Public URL; room links are built from it (required). |
+| `ICECAST_SOURCE_PASSWORD` | — | Shared source password for worker -> Icecast auth (required). |
 | `ICECAST_PUBLIC_URL` | — | Where browsers fetch the stream. |
 | `MAX_PENDING_PER_LISTENER` | `3` | Songs one listener may have waiting. |
 | `MAX_TRACK_DURATION_S` | `900` | Longest track accepted. |
