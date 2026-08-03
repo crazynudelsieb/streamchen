@@ -81,6 +81,26 @@ async def test_the_host_can_change_the_settings(client, room):
     assert state["settings"]["max_pending_per_listener"] == 5
 
 
+async def test_the_host_can_set_a_mix_as_the_radio_playlist(client, room):
+    """A mix pasted while a song is playing carries the seed it needs."""
+    link = "https://music.youtube.com/watch?v=vDWWofpuHyc&list=RDEM7AbogW0cCnElSU0WYm1GqA"
+    response = await client.patch(f"/api/rooms/{room['token']}", json={"fallback_playlist": link})
+
+    assert response.status_code == 200
+    assert response.json()["settings"]["fallback_playlist"] == link
+
+
+async def test_a_mix_link_with_no_song_in_it_is_refused_with_a_reason(client, room):
+    """Nothing can resolve it, so storing it would only be a silent dead end."""
+    response = await client.patch(
+        f"/api/rooms/{room['token']}",
+        json={"fallback_playlist": "https://music.youtube.com/playlist?list=RDEM7Abog"},
+    )
+
+    assert response.status_code == 400
+    assert "copy the link" in response.json()["detail"]
+
+
 async def test_a_listener_cannot_change_the_settings(new_client, room):
     guest = await new_client()
     response = await guest.patch(f"/api/rooms/{room['token']}", json={"name": "Mine now"})

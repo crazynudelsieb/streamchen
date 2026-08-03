@@ -9,9 +9,14 @@ Where that track comes from:
 * the host's radio playlist, if they set one. A host who pasted a playlist
   said what the room is *for*, so early on — while there is no history for
   anything else to be based on — it is the whole answer, and it stays the
-  majority of the answer afterwards;
+  majority of the answer afterwards. A YouTube mix counts as one of these: it
+  is a coherent pool of a few dozen tracks, which is a playlist in every way
+  that matters here, and like a playlist it has an end;
 * YouTube's mix for something the room played recently, which is what widens a
-  room beyond the list it started from.
+  room beyond the list it started from — and, because re-seeding it from what
+  the room just heard never runs out, what keeps the room playing for as long
+  as somebody is listening. A pool with an end is the baseline; this is the one
+  that has to still be there at four in the morning.
 
 Two rules keep this from running away:
 
@@ -51,7 +56,6 @@ from app.youtube import (
     YouTubeError,
     artist_key,
     fetch_metadata,
-    is_dynamic_mix,
     parse_playlist_url,
     parse_youtube_id,
     playlist_candidates,
@@ -137,15 +141,6 @@ async def _playlist_pool(redis: Redis, room: Room) -> list[SearchCandidate]:
 
     pool = [SearchCandidate(youtube_id=i, title="") for i in ids]
     for url in urls:
-        if is_dynamic_mix(url):
-            # Worth saying out loud: the link is not broken, it just does not
-            # name the same thing here that it named in the host's browser.
-            logger.warning(
-                "room %s: radio playlist %s is a personalised YouTube mix — it "
-                "resolves to different songs for the server than for the host",
-                room.token,
-                url,
-            )
         try:
             pool.extend(await playlist_candidates(redis, url))
         except YouTubeError as exc:
@@ -155,16 +150,26 @@ async def _playlist_pool(redis: Redis, room: Room) -> list[SearchCandidate]:
 
 
 async def _mix_pool(redis: Redis, history: list[Track]) -> list[SearchCandidate]:
-    """YouTube's mix for something the room played recently."""
-    if not history:
-        return []
+    """YouTube's mix for something the room played recently.
 
-    seed = random.choice(history[:RADIO_SEED_DEPTH])
-    try:
-        return await radio_candidates(redis, seed.youtube_id)
-    except YouTubeError as exc:
-        logger.info("mix for %s failed (%s)", seed.youtube_id, exc)
-        return []
+    Every recent seed is tried, not one of them, because this is the pool with
+    no ceiling: a host's playlist runs out of songs eventually and a mix seeded
+    from what the room just played does not. One unresolvable track — pulled,
+    geo-blocked, gone — is not allowed to be the reason a room falls silent.
+    """
+    seeds = list(dict.fromkeys(track.youtube_id for track in history[:RADIO_SEED_DEPTH]))
+    random.shuffle(seeds)
+
+    for seed in seeds:
+        try:
+            candidates = await radio_candidates(redis, seed)
+        except YouTubeError as exc:
+            logger.info("mix for %s failed (%s)", seed, exc)
+            continue
+        if candidates:
+            return candidates
+
+    return []
 
 
 def playlist_share(played: int) -> float:

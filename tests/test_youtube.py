@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+from urllib.parse import parse_qs, urlparse
+
+import fakeredis.aioredis
 import pytest
 
+from app import youtube
 from app.youtube import (
     SearchCandidate,
+    YouTubeError,
     artist_key,
     is_dynamic_mix,
+    is_seedless_mix,
     parse_playlist_url,
     parse_youtube_id,
+    playlist_candidates,
     song_score,
 )
 
@@ -122,13 +129,13 @@ def test_playlist_rejects_everything_else(value: str):
 
 
 # --- Mixes -------------------------------------------------------------------
-# A host pastes one of these because their browser showed them a coherent
-# playlist. The server has no account, so it is shown something else — and
-# something else again on the next fetch.
+# A mix is a station, not a stored list, and YouTube will only serve one from a
+# watch URL: /playlist?list=RD… is answered with "This playlist type is
+# unviewable". So the seed video is part of the address and canonicalising it
+# away is what made these unplayable.
 @pytest.mark.parametrize(
     "value",
     [
-        # The rock mix that played film scores: "My Mix 1" to a signed-out client.
         "https://music.youtube.com/playlist?list=RDTMAK5uy_nGQKSMIkpr4o9VI_2i56pkGliD6FQRo50",
         "https://www.youtube.com/playlist?list=RDTMAK5uy_nGQKSMIkpr4o9VI_2i56pkGliD6FQRo50",
         f"https://www.youtube.com/watch?v={VIDEO}&list=RD{VIDEO}",
@@ -138,6 +145,139 @@ def test_playlist_rejects_everything_else(value: str):
 )
 def test_dynamic_mixes_are_recognised(value: str):
     assert is_dynamic_mix(value) is True
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        # The link a host copies out of YouTube Music while a mix is playing.
+        (
+            f"https://music.youtube.com/watch?v={VIDEO}&list=RDEM7AbogW0cCnElSU0WYm1GqA",
+            f"https://www.youtube.com/watch?v={VIDEO}&list=RDEM7AbogW0cCnElSU0WYm1GqA",
+        ),
+        # A track's own radio, and the share sheet's leftovers.
+        (
+            f"https://www.youtube.com/watch?v={VIDEO}&list=RD{VIDEO}&si=xyz",
+            f"https://www.youtube.com/watch?v={VIDEO}&list=RD{VIDEO}",
+        ),
+    ],
+)
+def test_mixes_keep_their_seed_video(value: str, expected: str):
+    """The seed is half the address: a mix is unfetchable without one."""
+    assert parse_playlist_url(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://music.youtube.com/playlist?list=RDEM7AbogW0cCnElSU0WYm1GqA",
+        "https://www.youtube.com/playlist?list=RDTMAK5uy_nGQKSMIkpr4o9VI_2i56pkGliD6FQRo50",
+        f"https://www.youtube.com/watch?list=RD{VIDEO}",
+    ],
+)
+def test_seedless_mixes_are_rejected_rather_than_canonicalised(value: str):
+    """Better no URL than one that is guaranteed to fail on every fetch."""
+    assert parse_playlist_url(value) is None
+    assert is_seedless_mix(value) is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        f"https://music.youtube.com/watch?v={VIDEO}&list=RDEM7AbogW0cCnElSU0WYm1GqA",
+        "https://www.youtube.com/playlist?list=PLabc",
+        f"https://www.youtube.com/watch?v={VIDEO}",
+        "",
+    ],
+)
+def test_playable_links_are_not_seedless_mixes(value: str):
+    assert is_seedless_mix(value) is False
+
+
+# --- Walking a mix -----------------------------------------------------------
+# One window is not the station. The pool is what successive refreshes have
+# merged, which is how a mix reaches its ceiling of a few dozen tracks without
+# any single autoplay pick paying for the five extractions that would take.
+MIX = f"https://www.youtube.com/watch?v={VIDEO}&list=RDEM7AbogW0cCnElSU0WYm1GqA"
+
+
+def _window(*ids: str) -> list[dict]:
+    return [
+        {"id": i, "title": f"Band {i} - Song", "duration": 180, "channel": f"Band {i}"}
+        for i in ids
+    ]
+
+
+@pytest.fixture
+def redis():
+    return fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+
+async def _pool_ids(redis) -> list[str]:
+    # Through playlist_candidates, because that is the door autoplay comes in by
+    # and the routing is half of what makes a mix usable.
+    return [c.youtube_id for c in await playlist_candidates(redis, MIX)]
+
+
+async def test_a_mix_window_is_reused_until_it_is_due_a_refresh(redis, monkeypatch):
+    calls = []
+
+    def _entries(url: str, limit: int):
+        calls.append(url)
+        return _window("aaaaaaaaaaa", "bbbbbbbbbbb")
+
+    monkeypatch.setattr(youtube, "_flat_entries", _entries)
+
+    assert await _pool_ids(redis) == ["aaaaaaaaaaa", "bbbbbbbbbbb"]
+    assert await _pool_ids(redis) == ["aaaaaaaaaaa", "bbbbbbbbbbb"]
+    assert len(calls) == 1  # the second pick cost nothing upstream
+
+
+async def test_each_refresh_walks_the_station_further(redis, monkeypatch):
+    """A hop seeds from the frontier: the same vantage point twice learns nothing."""
+    windows = {
+        VIDEO: _window("aaaaaaaaaaa", "bbbbbbbbbbb"),
+        "aaaaaaaaaaa": _window("aaaaaaaaaaa", "ccccccccccc"),
+        "bbbbbbbbbbb": _window("ddddddddddd"),
+    }
+
+    def _entries(url: str, limit: int):
+        return windows.get(parse_qs(urlparse(url).query)["v"][0], [])
+
+    monkeypatch.setattr(youtube, "_flat_entries", _entries)
+
+    assert await _pool_ids(redis) == ["aaaaaaaaaaa", "bbbbbbbbbbb"]
+
+    await redis.delete(youtube._mix_fresh_key(MIX))
+    assert await _pool_ids(redis) == ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"]
+
+    await redis.delete(youtube._mix_fresh_key(MIX))
+    assert await _pool_ids(redis) == [
+        "aaaaaaaaaaa",
+        "bbbbbbbbbbb",
+        "ccccccccccc",
+        "ddddddddddd",
+    ]
+
+
+async def test_a_failed_hop_keeps_the_pool_it_already_has(redis, monkeypatch):
+    monkeypatch.setattr(youtube, "_flat_entries", lambda url, limit: _window("aaaaaaaaaaa"))
+    assert await _pool_ids(redis) == ["aaaaaaaaaaa"]
+
+    def _boom(url: str, limit: int):
+        raise RuntimeError("upstream said no")
+
+    monkeypatch.setattr(youtube, "_flat_entries", _boom)
+    await redis.delete(youtube._mix_fresh_key(MIX))
+
+    # The room keeps playing what the walk already found. The hop is retried at
+    # the next refresh rather than emptying the pool now.
+    assert await _pool_ids(redis) == ["aaaaaaaaaaa"]
+
+
+async def test_a_seedless_mix_is_an_error_rather_than_a_doomed_fetch(redis):
+    with pytest.raises(YouTubeError):
+        await playlist_candidates(redis, "https://www.youtube.com/playlist?list=RDEMabcdef")
 
 
 @pytest.mark.parametrize(

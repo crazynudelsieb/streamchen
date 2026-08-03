@@ -34,6 +34,7 @@ from app.service import (
 from app.youtube import (
     YouTubeError,
     fetch_metadata,
+    is_dynamic_mix,
     normalize_query,
     parse_playlist_url,
     parse_youtube_id,
@@ -137,7 +138,9 @@ async def add_track(
         # A playlist is not a malformed request, it is a request aimed at the
         # wrong place: the queue takes one song, the radio playlist takes the
         # pool. Saying so is the difference between a dead end and a redirect.
-        if parse_playlist_url(payload.url):
+        # A mix with no video in it resolves to no playlist URL either, but it
+        # is still a listener aiming a pool at a slot that takes one song.
+        if parse_playlist_url(payload.url) or is_dynamic_mix(payload.url):
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 "That is a playlist. Add one song here — a playlist belongs in "

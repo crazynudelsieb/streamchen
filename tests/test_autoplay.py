@@ -97,6 +97,25 @@ def test_playlist_field_takes_youtube_music():
     assert ids == [video_id(7)]
 
 
+def test_playlist_field_takes_a_mix_with_its_seed():
+    """A mix is only playable from inside it, so the seed video has to survive."""
+    urls, ids = autoplay.parse_playlist_field(
+        f"https://music.youtube.com/watch?v={video_id(7)}&list=RDEM7AbogW0cCnElSU0WYm1GqA"
+    )
+
+    assert urls == [
+        f"https://www.youtube.com/watch?v={video_id(7)}&list=RDEM7AbogW0cCnElSU0WYm1GqA"
+    ]
+    assert ids == []
+
+
+def test_playlist_field_drops_a_mix_with_no_seed():
+    """Nothing resolves it, and the host is told so where they pasted it."""
+    field = "https://music.youtube.com/playlist?list=RDEM7AbogW0cCnElSU0WYm1GqA"
+
+    assert autoplay.parse_playlist_field(field) == ([], [])
+
+
 def test_playlist_field_drops_links_that_are_not_youtube():
     """The field feeds yt-dlp directly, so a stranger's URL must not reach it."""
     urls, ids = autoplay.parse_playlist_field("https://example.com/playlist?list=PLabc")
@@ -107,6 +126,44 @@ def test_playlist_field_drops_links_that_are_not_youtube():
 def test_playlist_field_is_empty_when_unset():
     assert autoplay.parse_playlist_field(None) == ([], [])
     assert autoplay.parse_playlist_field("   ") == ([], [])
+
+
+# --- The pool with no ceiling -----------------------------------------------
+async def test_the_endless_radio_survives_a_dead_seed(monkeypatch):
+    """One unplayable recent track must not be what stops a room playing.
+
+    The host's playlist ends; this pool is the reason a room is still going at
+    four in the morning, so it is tried against every recent seed rather than
+    against one of them.
+    """
+    from app.youtube import YouTubeError
+
+    async def _mix(_redis, youtube_id: str, limit: int = 25, ttl_s: int = 0):
+        if youtube_id == video_id(1):
+            raise YouTubeError("pulled")
+        if youtube_id == video_id(2):
+            return []  # resolves, has nothing to offer
+        return [SearchCandidate(youtube_id=video_id(42), title="Band - Song", duration_s=180)]
+
+    monkeypatch.setattr("app.autoplay.radio_candidates", _mix)
+
+    history = [Track(youtube_id=video_id(i), title=f"Track {i}", duration_s=180) for i in (1, 2, 3)]
+    pool = await autoplay._mix_pool(None, history)
+
+    assert [c.youtube_id for c in pool] == [video_id(42)]
+
+
+async def test_the_endless_radio_gives_up_only_when_every_seed_does(monkeypatch):
+    from app.youtube import YouTubeError
+
+    async def _mix(_redis, youtube_id: str, limit: int = 25, ttl_s: int = 0):
+        raise YouTubeError("upstream said no")
+
+    monkeypatch.setattr("app.autoplay.radio_candidates", _mix)
+
+    history = [Track(youtube_id=video_id(i), title=f"Track {i}", duration_s=180) for i in (1, 2)]
+
+    assert await autoplay._mix_pool(None, history) == []
 
 
 # --- Ordering ---------------------------------------------------------------
