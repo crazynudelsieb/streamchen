@@ -166,6 +166,38 @@ def _retrieve_failure(task: asyncio.Task) -> None:
         task.exception()
 
 
+# How long an ffmpeg gets to exit on its own before it is killed. Every one of
+# these is on the path of stopping a room, and they are sequential, so a
+# generous timeout here is the host watching a button that has already been
+# pressed. ffmpeg exits on the first signal in well under this; anything that
+# does not is stuck, and waiting longer will not unstick it.
+TERMINATE_GRACE_S = 1.0
+
+
+async def _end_process(process: asyncio.subprocess.Process) -> None:
+    """Stop an ffmpeg and do not come back until it is gone.
+
+    Asking twice matters: a process that ignores the first signal used to be
+    left behind by the timeout, still holding its file and its share of the
+    CPU, on a worker that had already moved on.
+    """
+    if process.returncode is not None:
+        return
+
+    for stop in (process.terminate, process.kill):
+        with contextlib.suppress(ProcessLookupError):
+            stop()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=TERMINATE_GRACE_S)
+            return
+        except TimeoutError:
+            continue
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # already reaped, or no longer ours to wait on
+            return
+
+
 class RoomPlayer:
     """Plays a single room until cancelled."""
 
@@ -324,10 +356,7 @@ class RoomPlayer:
         with contextlib.suppress(Exception):
             if process.stdin is not None:
                 process.stdin.close()
-        with contextlib.suppress(ProcessLookupError):
-            process.terminate()
-        with contextlib.suppress(asyncio.TimeoutError, Exception):
-            await asyncio.wait_for(process.wait(), timeout=5)
+        await _end_process(process)
 
     async def _write(self, data: bytes) -> None:
         """Blocks once the encoder's ``-re`` pacing fills the pipe, which is
@@ -642,12 +671,15 @@ class RoomPlayer:
             self.current_youtube_id = None
             return None
 
-        # Measured here rather than skipped. Getting this far means a cold
-        # start — a hole in the broadcast that silence is already covering — and
-        # the room's first song arriving at a different level than everything
-        # after it is precisely what a listener notices. A track the lookahead
-        # already measured costs nothing: the answer is waiting.
-        await self._while_feeding(self._loudness.measure(track["youtube_id"], path))
+        # Never waited for. Getting this far means a cold start, and every
+        # second spent here is a second of silence on air with nothing to cover
+        # it but more silence — analysing a whole track takes longer than most
+        # listeners will give a room that has just been switched on.
+        #
+        # Nothing is lost by moving on: whatever the lookahead already measured
+        # is read by ``_open_decoder`` below, and a file nobody has measured
+        # plays through the one-pass filter, which is the mode that exists for
+        # exactly this case and still lands the track near the target.
         return await self._open_decoder(path, track["youtube_id"])
 
     async def _pump(self, decoder: asyncio.subprocess.Process, entry_id: str) -> bool:
@@ -791,10 +823,7 @@ class RoomPlayer:
         )
 
     async def _close_decoder(self, decoder: asyncio.subprocess.Process) -> None:
-        with contextlib.suppress(ProcessLookupError):
-            decoder.terminate()
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(decoder.wait(), timeout=5)
+        await _end_process(decoder)
 
     # --- Lookahead -------------------------------------------------------
     def _remaining_s(self) -> float:

@@ -331,16 +331,20 @@ async def listeners(
         .where(Listener.room_id == room.id, Listener.session_id != RADIO_SESSION_ID)
         .order_by(Listener.created_at)
     )
+    # Asked once for the room rather than once per listener: this list is every
+    # session that ever opened the link, and a host with a busy room should not
+    # pay a round trip per name in it.
+    present = await events.present_sessions(redis, room.id)
+
     rows: list[ListenerRow] = []
     for listener in result.scalars().all():
-        online = await redis.exists(events.presence_key(room.id, listener.session_id))
         rows.append(
             ListenerRow(
                 id=listener.id,
                 display_name=listener.display_name,
                 avatar=listener_seed(listener),
                 is_host=listener.is_host,
-                online=bool(online),
+                online=listener.session_id in present,
                 queued=await pending_count_for(db, room.id, listener.id),
                 shadow_banned=listener.is_shadow_banned(),
             )

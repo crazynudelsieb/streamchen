@@ -43,6 +43,18 @@ def test_the_encoder_announces_the_room_name_on_the_mount():
     assert command[command.index("-ice_name") + 1] == "Kitchen Radio"
 
 
+def test_the_encoder_hands_every_frame_straight_to_icecast():
+    """Buffered output is latency every listener pays, at every start: the
+    muxer holds seconds of audio back before writing any of it, which is added
+    to how long the mount takes to exist and to how far behind live it runs."""
+    command = encoder_command(make_settings(), "/room.mp3", "Test")
+
+    flag = command.index("-flush_packets")
+    assert command[flag + 1] == "1"
+    # An output option: before the muxer, after the input it applies to.
+    assert flag > command.index("-i")
+
+
 def test_the_encoder_serves_mp3():
     command = encoder_command(make_settings(), "/room.mp3", "Test")
     assert command[command.index("-content_type") + 1] == "audio/mpeg"
