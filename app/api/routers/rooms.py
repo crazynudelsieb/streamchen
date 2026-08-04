@@ -18,7 +18,7 @@ from app.api.deps import (
     require_host,
     require_room,
 )
-from app.api.playback import now_playing_state
+from app.api.playback import room_view
 from app.avatars import listener_seed
 from app.config import Settings
 from app.models import Listener, Room, utcnow
@@ -39,13 +39,10 @@ from app.service import (
     join_room,
     listener_info,
     online_listeners,
-    pending_count_for,
-    queued_tracks,
-    recent_tracks,
+    pending_counts,
     rename_listener,
     reroll_avatar,
     room_settings,
-    serialize_track,
     stream_url,
 )
 from app.youtube import is_seedless_mix
@@ -86,16 +83,7 @@ async def build_state(
     settings: Settings,
 ) -> RoomState:
     """The whole page in one object — the frontend stores none of it."""
-    state = await now_playing_state(db, redis, room.id, listener)
-
-    queue = await queued_tracks(db, room.id, include_shadow_for=listener.id)
-    history = await recent_tracks(db, room.id)
-
-    online = len(await online_listeners(db, redis, room.id))
-    if online == 0:
-        # Presence is written just after the join, so a snapshot taken in
-        # between finds none. The viewer holding this request is at least here.
-        online = 1
+    view = await room_view(db, redis, room, listener)
 
     return RoomState(
         token=room.token,
@@ -104,10 +92,10 @@ async def build_state(
         stream_url=stream_url(settings, room),
         me=listener_info(listener),
         is_host=listener.is_host or has_host_secret(request, room),
-        listeners=online,
-        now_playing=state,
-        queue=[serialize_track(track, listener) for track in queue],
-        history=[serialize_track(track, listener) for track in history],
+        listeners=view.listeners,
+        now_playing=view.now_playing,
+        queue=view.queue,
+        history=view.history,
     )
 
 
@@ -331,22 +319,21 @@ async def listeners(
         .where(Listener.room_id == room.id, Listener.session_id != RADIO_SESSION_ID)
         .order_by(Listener.created_at)
     )
-    # Asked once for the room rather than once per listener: this list is every
-    # session that ever opened the link, and a host with a busy room should not
-    # pay a round trip per name in it.
+    # Both asked once for the room rather than once per listener: this list is
+    # every session that ever opened the link, and a host with a busy room
+    # should not pay a round trip per name in it.
     present = await events.present_sessions(redis, room.id)
+    queued = await pending_counts(db, room.id)
 
-    rows: list[ListenerRow] = []
-    for listener in result.scalars().all():
-        rows.append(
-            ListenerRow(
-                id=listener.id,
-                display_name=listener.display_name,
-                avatar=listener_seed(listener),
-                is_host=listener.is_host,
-                online=listener.session_id in present,
-                queued=await pending_count_for(db, room.id, listener.id),
-                shadow_banned=listener.is_shadow_banned(),
-            )
+    return [
+        ListenerRow(
+            id=listener.id,
+            display_name=listener.display_name,
+            avatar=listener_seed(listener),
+            is_host=listener.is_host,
+            online=listener.session_id in present,
+            queued=queued.get(listener.id, 0),
+            shadow_banned=listener.is_shadow_banned(),
         )
-    return rows
+        for listener in result.scalars().all()
+    ]

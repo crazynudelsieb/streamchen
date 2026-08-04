@@ -11,7 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.models import Listener, Room
 from app.security import is_valid_room_token, verify_secret
-from app.service import count_listeners, get_listener, get_room, is_banned, join_room
+from app.service import (
+    count_listeners,
+    get_listener,
+    get_room,
+    is_banned,
+    join_room,
+    touch_listener,
+)
 
 HOST_SECRET_HEADER = "X-Host-Secret"
 
@@ -65,14 +72,27 @@ async def current_listener(
     if await is_banned(db, room.id, session_id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "You have been removed from this room")
 
+    # Looked up once and carried through the rest of this: the capacity check,
+    # the host question and the join all used to ask for the same row.
+    listener = await get_listener(db, room.id, session_id)
+    already_host = listener is not None and listener.is_host
+
+    # Verifying the secret is Argon2id at 19 MiB — deliberately slow, and the
+    # browser attaches the header to every host action there is. Host rights are
+    # sticky once proven (see ``require_host``), so a session that already holds
+    # them never pays for that again.
     host_secret = request.headers.get(HOST_SECRET_HEADER, "")
-    as_host = bool(host_secret) and verify_secret(room.host_secret_hash, host_secret)
+    as_host = (
+        bool(host_secret) and not already_host and verify_secret(room.host_secret_hash, host_secret)
+    )
+
+    if listener is not None:
+        return touch_listener(room, listener, as_host=as_host)
 
     # Capacity applies to newcomers only -- someone already in the room does
     # not get bounced because the host later lowered the limit.
-    if not as_host and await get_listener(db, room.id, session_id) is None:
-        if await count_listeners(db, room.id) >= room.max_listeners:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "This room is full")
+    if not as_host and await count_listeners(db, room.id) >= room.max_listeners:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "This room is full")
 
     return await join_room(db, room, session_id, as_host=as_host)
 

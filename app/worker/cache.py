@@ -51,9 +51,13 @@ class AudioCache:
         # directory. Saying so once at startup beats a PermissionError from
         # whichever sweep happens to touch it first.
         if not os.access(self.directory, os.R_OK | os.W_OK | os.X_OK):
+            # getuid is POSIX-only, and this has to be able to say what is wrong
+            # on a developer's Windows machine too -- an error path that raises
+            # its own AttributeError says nothing at all.
+            whoami = getattr(os, "getuid", lambda: "this user")()
             raise PermissionError(
                 f"audio cache {self.directory} is not readable/writable by "
-                f"uid {os.getuid()}: check the tmpfs uid/gid mount options"
+                f"uid {whoami}: check the tmpfs uid/gid mount options"
             )
 
     # --- Lookups ---------------------------------------------------------

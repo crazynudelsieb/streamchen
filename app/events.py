@@ -179,13 +179,6 @@ async def anyone_present(redis: Redis, room_id: uuid.UUID | str) -> bool:
     return await count_present(redis, room_id) > 0
 
 
-async def is_present(redis: Redis, room_id: uuid.UUID | str, session_id: str) -> bool:
-    """Whether one session is here. For a whole roster ask ``present_sessions``
-    once instead: this is a round trip per listener."""
-    score = await redis.zscore(presence_key(room_id), session_id)
-    return score is not None and float(score) > time.time()
-
-
 async def live_room_ids(redis: Redis) -> set[str]:
     """Every room that should have a source right now.
 

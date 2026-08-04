@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.config import Settings
+from app.worker.tasks import SharedTasks
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,7 @@ class Measurements:
         # ffmpeg cannot read is re-analysed on every lookahead poll for as long
         # as it sits at the top of the queue.
         self._known: dict[str, Loudness | None] = {}
-        self._tasks: dict[str, asyncio.Task[Loudness | None]] = {}
+        self._tasks: SharedTasks[Loudness | None] = SharedTasks()
 
     def known(self, key: str) -> Loudness | None:
         """What was measured for this key, without waiting for anything."""
@@ -163,19 +164,7 @@ class Measurements:
             return None
         if key in self._known:
             return self._known[key]
-
-        task = self._tasks.get(key)
-        if task is None or task.done():
-            task = asyncio.create_task(self._analyse(key, path))
-            task.add_done_callback(_retrieve_failure)
-            self._tasks = {other: t for other, t in self._tasks.items() if not t.done()}
-            self._tasks[key] = task
-
-        # Shielded for the same reason a download is: the lookahead that
-        # started this is cancelled at every track boundary, and an analysis
-        # abandoned one frame from the end is one the next caller pays for
-        # again.
-        return await asyncio.shield(task)
+        return await self._tasks.run(key, lambda: self._analyse(key, path))
 
     def forget(self, key: str) -> None:
         """Drop what is known about a file that is gone.
@@ -185,16 +174,12 @@ class Measurements:
         remember every track it had ever played.
         """
         self._known.pop(key, None)
-        task = self._tasks.pop(key, None)
-        if task is not None:
-            task.cancel()
+        self._tasks.cancel(key)
 
     def abandon(self) -> None:
         """Let go of every analysis still running. The ffmpeg processes are
         killed by the tasks themselves as they unwind."""
-        for task in self._tasks.values():
-            task.cancel()
-        self._tasks.clear()
+        self._tasks.abandon()
 
     async def _analyse(self, key: str, path: Path) -> Loudness | None:
         measured = await self._probe(path)
@@ -239,10 +224,3 @@ async def _kill(process: asyncio.subprocess.Process) -> None:
         process.kill()
     with contextlib.suppress(Exception):
         await process.wait()
-
-
-def _retrieve_failure(task: asyncio.Task) -> None:
-    """An analysis whose caller was cancelled still has to have its exception
-    looked at, or asyncio complains when the task is collected."""
-    if not task.cancelled():
-        task.exception()

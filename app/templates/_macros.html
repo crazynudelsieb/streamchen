@@ -1,0 +1,11 @@
+{# Fragments used by more than one template. Imported, never extended. #}
+
+{% macro track_link(track) -%}
+{#- A room plays what its listeners linked to, so "where was that from" has an
+    obvious answer and no reason to be hidden. nofollow because a room is not a
+    vote for anything, and noopener/noreferrer because the target is somebody
+    else's page. -#}
+<a class="track-link" href="https://www.youtube.com/watch?v={{ track.youtube_id }}"
+   target="_blank" rel="noopener noreferrer nofollow"
+   title="{{ track.title }} — open on YouTube">{{ track.title }}</a>
+{%- endmacro %}

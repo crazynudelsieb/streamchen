@@ -71,13 +71,19 @@ class SessionMiddleware(BaseHTTPMiddleware):
             # Content-addressed URLs — a versioned asset (?v=<release>) or an
             # avatar drawn from its own seed — so the bytes behind one never
             # change and it can be cached for as long as the browser likes.
+            #
+            # No cookies on these, and that is not a detail: "public" invites
+            # a shared cache to keep one copy for everybody, and a Set-Cookie
+            # stored alongside it would hand one visitor's session to every
+            # other visitor. The session is issued by the pages and API calls
+            # that actually need it, which every client makes anyway.
             response.headers["Cache-Control"] = "public,max-age=31536000,immutable"
-        else:
-            # Room state, queue state, rendered pages: everything else is a
-            # view of live state and must never be stored (concept §12).
-            response.headers["Cache-Control"] = "no-store"
-            response.headers["Pragma"] = "no-cache"
+            return response
 
+        # Room state, queue state, rendered pages: everything else is a view of
+        # live state and must never be stored (concept §12).
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
         return self._with_cookies(response, session_id, csrf_token)
 
     def _with_cookies(self, response, session_id: str, csrf_token: str):

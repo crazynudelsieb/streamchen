@@ -3,7 +3,7 @@
 Turns the CONTACT_* config into the list of links to render (only the channels
 an operator actually configured), and splits an email address so no literal
 address — and no ``mailto:`` — ever appears in the page source. The client
-reassembles the address (see the ``useMailto`` hook in the frontend), which
+reassembles the address (``wireMailLinks`` in ``app/static/app.js``), which
 defeats the naive harvesters that scrape pages for ``\\S+@\\S+`` or ``mailto:``
 links.
 """
@@ -99,8 +99,9 @@ def split_email(email: str) -> list[str] | None:
 def legal_payload(settings: Settings) -> dict:
     """Everything the footer and the legal pages need, computed from config.
 
-    Served from ``/api/meta`` rather than baked into the bundle so an operator
-    can change their contact details by restarting a container.
+    Read once into the Jinja globals (``web.build_templates``) rather than baked
+    into the templates, so an operator can change their contact details by
+    restarting a container.
     """
     return {
         "contact_links": get_contact_links(settings),

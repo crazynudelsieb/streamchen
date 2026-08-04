@@ -105,7 +105,6 @@ class Settings:
 
     # --- Caches (concept §12) -----------------------------------------
     metadata_cache_ttl_s: int = 24 * 3600
-    stream_url_cache_ttl_s: int = 300
     audio_cache_dir: str = "/tmp/streamchen-audio"
     audio_cache_budget_bytes: int = 1024 * 1024 * 1024
     audio_prefetch_ttl_s: int = 600
@@ -223,9 +222,12 @@ class Settings:
             base_url=_require("BASE_URL").rstrip("/"),
             log_level=_str("LOG_LEVEL", "INFO").upper(),
             cors_origins=_csv("CORS_ORIGINS"),
+            session_cookie=_str("SESSION_COOKIE", "sc_session"),
+            csrf_cookie=_str("CSRF_COOKIE", "sc_csrf"),
             secure_cookies=_bool("SECURE_COOKIES", False),
             session_days=_int("SESSION_DAYS", 90),
             trusted_proxy_count=_int("TRUSTED_PROXY_COUNT", 1),
+            room_name_max_length=_int("ROOM_NAME_MAX_LENGTH", 80),
             default_max_listeners=_int("MAX_LISTENERS", 100),
             default_max_pending_per_listener=_int("MAX_PENDING_PER_LISTENER", 3),
             room_idle_days=_int("ROOM_IDLE_DAYS", 7),
@@ -242,8 +244,8 @@ class Settings:
             chat_rate_limit=_int("CHAT_RATE_LIMIT", 6),
             shadow_ban_minutes=_int("SHADOW_BAN_MINUTES", 15),
             shadow_ban_strikes=_int("SHADOW_BAN_STRIKES", 5),
+            strike_window_s=_int("STRIKE_WINDOW_S", 300),
             metadata_cache_ttl_s=_int("METADATA_CACHE_TTL_S", 24 * 3600),
-            stream_url_cache_ttl_s=_int("STREAM_URL_CACHE_TTL_S", 300),
             audio_cache_dir=_str("AUDIO_CACHE_DIR", "/tmp/streamchen-audio"),
             audio_cache_budget_bytes=_int("AUDIO_CACHE_BUDGET_BYTES", 1024 * 1024 * 1024),
             audio_prefetch_ttl_s=_int("AUDIO_PREFETCH_TTL_S", 600),
@@ -263,8 +265,11 @@ class Settings:
             icecast_source_password=_require("ICECAST_SOURCE_PASSWORD"),
             icecast_public_url=_str("ICECAST_PUBLIC_URL", ""),
             icecast_bitrate_kbps=_int("ICECAST_BITRATE_KBPS", 128),
+            audio_sample_rate=_int("AUDIO_SAMPLE_RATE", 44100),
+            audio_channels=_int("AUDIO_CHANNELS", 2),
             ffmpeg_binary=_str("FFMPEG_BINARY", "ffmpeg"),
             worker_poll_interval_s=_int("WORKER_POLL_INTERVAL_S", 2),
+            worker_lock_ttl_s=_int("WORKER_LOCK_TTL_S", 30),
             audio_normalize=_bool("AUDIO_NORMALIZE", True),
             audio_target_lufs=_float("AUDIO_TARGET_LUFS", -14.0),
             audio_target_tp=_float("AUDIO_TARGET_TP", -1.5),
@@ -284,6 +289,7 @@ class Settings:
             data_location=_str("DATA_LOCATION"),
             seo_enabled=_bool("SEO_ENABLED", False),
             seo_site_name=_str("SEO_SITE_NAME", "streamchen"),
+            seo_description=_str("SEO_DESCRIPTION", cls.seo_description),
         )
 
 

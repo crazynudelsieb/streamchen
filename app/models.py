@@ -53,8 +53,6 @@ STATE_PLAYED = "played"
 STATE_SKIPPED = "skipped"
 STATE_FAILED = "failed"
 
-FINISHED_STATES = (STATE_PLAYED, STATE_SKIPPED, STATE_FAILED)
-
 
 class Room(Base):
     """A shared listening room. The token *is* the invite link."""

@@ -66,8 +66,3 @@ def order_queue(candidates: list[Candidate]) -> list[Candidate]:
         )
     )
     return [candidate for _, candidate in ranked]
-
-
-def next_candidate(candidates: list[Candidate]) -> Candidate | None:
-    ordered = order_queue(candidates)
-    return ordered[0] if ordered else None

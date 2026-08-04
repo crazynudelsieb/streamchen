@@ -29,18 +29,12 @@ from app.api.deps import (
     has_host_secret,
     require_room,
 )
-from app.api.playback import now_playing_state
+from app.api.playback import room_view
 from app.avatars import cat_svg, listener_seed
 from app.config import Settings
 from app.contact import imprint_payload, legal_payload
 from app.models import Listener, Room
-from app.service import (
-    online_listeners,
-    queued_tracks,
-    recent_tracks,
-    serialize_track,
-    stream_url,
-)
+from app.service import stream_url
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -134,6 +128,8 @@ def build_templates(settings: Settings) -> Jinja2Templates:
         SEO_ENABLED=settings.seo_enabled,
         SEO_SITE_NAME=settings.seo_site_name,
         SEO_DESCRIPTION=settings.seo_description,
+        # The client half of the double-submit CSRF check reads this cookie.
+        CSRF_COOKIE=settings.csrf_cookie,
         contact_links=legal["contact_links"],
         contact_email=legal["contact_email"],
         license_email=legal["license_email"],
@@ -250,16 +246,16 @@ async def _room_context(
     redis: Redis,
     settings: Settings,
 ) -> dict:
-    """Everything both the full page and its fragments render from."""
+    """Everything both the full page and its fragments render from.
+
+    The same ``room_view`` the JSON snapshot is built from, projected into the
+    template context: what a page shows and what the API reports cannot be two
+    different readings of the room.
+    """
     is_host = listener.is_host or has_host_secret(request, room)
 
-    state = await now_playing_state(db, redis, room.id, listener)
-
-    queue = [
-        serialize_track(track, listener)
-        for track in await queued_tracks(db, room.id, include_shadow_for=listener.id)
-    ]
-    history = [serialize_track(track, listener) for track in await recent_tracks(db, room.id)]
+    view = await room_view(db, redis, room, listener)
+    state, queue, history = view.now_playing, view.queue, view.history
 
     # What the history may not offer again yet. A played song can be queued back
     # once, and only once: while it is waiting or on air its row says so instead
@@ -268,10 +264,6 @@ async def _room_context(
     # a row and the queue right above it can never disagree.
     on_air_id = state.track.youtube_id if state.track else None
     queued_ids = {track.youtube_id for track in queue}
-
-    # Present *and* still a listener here -- see service.online_listeners for
-    # why presence on its own would show people who are no longer in the room.
-    online = len(await online_listeners(db, redis, room.id)) or 1
 
     pending = sum(1 for track in queue if track.mine)
     if room.queue_locked and not is_host:
@@ -292,7 +284,7 @@ async def _room_context(
         # here rather than in the template.
         "my_avatar": listener_seed(listener),
         "is_host": is_host,
-        "listeners": online,
+        "listeners": view.listeners,
         "now_playing": state,
         "progress_percent": progress,
         # Whether this instance can play news at all, and what it calls its

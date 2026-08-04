@@ -73,7 +73,7 @@ async def new_client(api) -> AsyncIterator[Callable]:
         opened.append(client)
         # Bootstraps the session and CSRF cookies, then arms the header half
         # of the double-submit check for every later request.
-        await client.get("/api/meta")
+        await client.get("/api/healthz")
         client.headers["X-CSRF-Token"] = client.cookies["sc_csrf"]
         return client
 

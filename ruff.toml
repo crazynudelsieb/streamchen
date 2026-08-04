@@ -8,7 +8,6 @@ line-length = 100
 # The interpreter in the Dockerfiles. Both images ship the same runtime, so
 # the lint should not suggest rewrites they cannot execute.
 target-version = "py314"
-extend-exclude = ["frontend"]
 
 [lint]
 # Ruff's defaults (E4/E7/E9/F) plus:

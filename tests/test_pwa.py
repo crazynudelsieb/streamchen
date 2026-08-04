@@ -106,10 +106,13 @@ async def test_the_install_button_starts_hidden(client):
 
 
 async def test_an_installed_app_is_not_asked_to_install_again(client):
-    page = (await client.get("/")).text
+    """The rule lives in the stylesheet the page links, so assert both halves:
+    a rule nothing loads hides nothing."""
+    assert "/static/app.css" in (await client.get("/")).text
 
-    assert "@media (display-mode: standalone)" in page
-    assert ".install-banner, #installButton { display: none !important; }" in page
+    css = (await client.get("/static/app.css")).text
+    assert "@media (display-mode: standalone)" in css
+    assert ".install-banner, #installButton { display: none !important; }" in css
 
 
 async def test_the_page_explains_the_install_where_a_browser_will_not_do_it(client):
