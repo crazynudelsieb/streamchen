@@ -31,10 +31,18 @@ LABEL org.opencontainers.image.url="https://github.com/crazynudelsieb/streamchen
 LABEL org.opencontainers.image.source="https://github.com/crazynudelsieb/streamchen"
 LABEL org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0"
 
+# XDG_CACHE_HOME is where yt-dlp keeps YouTube's player javascript once it has
+# fetched and interpreted it. Given nowhere to write it does that again for
+# every single track, which is seconds of silence per song: the container user
+# has no home directory, so the default (~/.cache) cannot be created and the
+# cache silently never hits. Deliberately not the audio cache -- that one is a
+# tmpfs the worker purges at startup and sweeps to a budget, and this has to
+# survive both.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH" \
-    AUDIO_CACHE_DIR=/var/cache/streamchen
+    AUDIO_CACHE_DIR=/var/cache/streamchen \
+    XDG_CACHE_HOME=/var/cache/streamchen-extractor
 
 RUN apt-get update && apt-get install -y \
     libpq5 \
@@ -52,9 +60,11 @@ COPY --from=builder /opt/venv /opt/venv
 WORKDIR /app
 COPY app ./app
 
-# tmpfs in compose, so a restart cannot inherit media from the run before it.
-RUN mkdir -p /var/cache/streamchen && \
-    chown -R streamchen:streamchen /app /var/cache/streamchen
+# The first is a tmpfs in compose, so a restart cannot inherit media from the
+# run before it. The second must not be: see XDG_CACHE_HOME above.
+RUN mkdir -p /var/cache/streamchen /var/cache/streamchen-extractor && \
+    chown -R streamchen:streamchen \
+        /app /var/cache/streamchen /var/cache/streamchen-extractor
 
 USER streamchen
 

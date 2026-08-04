@@ -31,9 +31,15 @@ LABEL org.opencontainers.image.source="https://github.com/crazynudelsieb/streamc
 LABEL org.opencontainers.image.documentation="https://github.com/crazynudelsieb/streamchen/blob/main/README.md"
 LABEL org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0"
 
+# XDG_CACHE_HOME is where yt-dlp keeps YouTube's player javascript once it has
+# fetched and interpreted it. Given nowhere to write it does that again on every
+# extraction, which every search and every song added pays for: the container
+# user has no home directory, so the default (~/.cache) cannot be created and
+# the cache silently never hits.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/opt/venv/bin:$PATH"
+    PATH="/opt/venv/bin:$PATH" \
+    XDG_CACHE_HOME=/var/cache/streamchen-extractor
 
 RUN apt-get update && apt-get install -y \
     libpq5 \
@@ -48,7 +54,8 @@ COPY --from=builder /opt/venv /opt/venv
 WORKDIR /app
 COPY app ./app
 
-RUN chown -R streamchen:streamchen /app
+RUN mkdir -p /var/cache/streamchen-extractor && \
+    chown -R streamchen:streamchen /app /var/cache/streamchen-extractor
 USER streamchen
 
 EXPOSE 8000

@@ -46,6 +46,14 @@ def encoder_command(settings: Settings, mount: str, station_name: str) -> list[s
         "-i", "pipe:0",
         "-c:a", "libmp3lame",
         "-b:a", f"{settings.icecast_bitrate_kbps}k",
+        # Hand every frame to the mount as it is encoded. Without this the
+        # muxer fills its own output buffer before writing anything, and at
+        # these bitrates that buffer is seconds of audio: measured against a
+        # sink fed silence at real time, the first bytes leave ffmpeg after
+        # 0.1 s with this flag and had still not left after eight seconds
+        # without it. Every one of those seconds is added to how long a mount
+        # takes to appear, and paid again by every listener who presses play.
+        "-flush_packets", "1",
         "-content_type", "audio/mpeg",
         "-ice_name", station_name,
         "-ice_description", "streamchen collaborative radio",

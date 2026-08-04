@@ -349,9 +349,18 @@
   /* Pressing play can legitimately be early: the worker may still be
    * connecting its source, in which case the mount does not exist yet and the
    * request 404s. That is a wait, not a failure, so keep asking for a few
-   * seconds before telling the listener anything is wrong. */
-  var CONNECT_ATTEMPTS = 8;
-  var CONNECT_BACKOFF_MS = 600;
+   * seconds before telling the listener anything is wrong.
+   *
+   * What is being waited for is one event — a mount appearing — and how long
+   * the listener then hears nothing is however much of the retry delay was
+   * left. So the delay stays short across the seconds a source normally takes
+   * to connect, and only lengthens past that, where the wait is no longer
+   * ordinary and hammering it would be. The window is about as patient as
+   * before; it is the time between asking that is different. */
+  var CONNECT_QUICK_ATTEMPTS = 10;
+  var CONNECT_QUICK_MS = 300;
+  var CONNECT_ATTEMPTS = 20;
+  var CONNECT_SLOW_MS = 1000;
 
   function wirePlayer(root, streamUrl) {
     var audio = document.getElementById('audio');
@@ -414,7 +423,10 @@
         if (error && error.name === 'NotAllowedError') { giveUp(); return; }
         if (state !== 'connecting') return;
         if (++attempt >= CONNECT_ATTEMPTS) { giveUp(); return; }
-        retry = window.setTimeout(tryConnect, CONNECT_BACKOFF_MS * attempt);
+        retry = window.setTimeout(
+          tryConnect,
+          attempt < CONNECT_QUICK_ATTEMPTS ? CONNECT_QUICK_MS : CONNECT_SLOW_MS
+        );
       });
     }
 

@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -40,15 +42,48 @@ def _is_uuid(value: str) -> bool:
 
 SWEEP_INTERVAL_S = 5
 
+# The shortest gap between two sweeps. A wake is published every time a room is
+# opened, so a busy instance can ask for one many times a second; without a
+# floor the supervisor would answer each of them with a database round trip.
+# Well under the delay anybody can perceive, so it costs a start nothing.
+MIN_SWEEP_GAP_S = 0.4
+
 # How long after a room was last touched it may still get a source without
 # anybody being present. This covers the seconds between "a room was created"
 # or "a song was added" and the browser that did it registering as a listener,
 # so the mount is connected by the time somebody presses play. It is not a
 # grace period for an empty room: presence is what keeps a stream running.
-STARTUP_GRACE = timedelta(seconds=90)
+#
+# Every request touching a room refreshes what this is measured against, so the
+# window is also what an emptied room coasts on after its last listener has
+# gone — and for as long as it is set to, something is encoding for nobody.
+# Only the way *in* needs covering here: a browser that has loaded a room page
+# opens its socket a moment later, and the way *out* has an exact signal of its
+# own now (``events.LAST_LISTENER_GRACE_S``), so this no longer has to be
+# generous enough to stand in for one.
+STARTUP_GRACE = timedelta(seconds=30)
 
 PRUNE_INTERVAL_S = 3600
 PRUNE_LOCK_KEY = "streamchen:prune-lock"
+
+
+async def _warm_extractor() -> None:
+    """Import yt-dlp now rather than at the first download.
+
+    It is a large package with a few thousand extractors in it, and the import
+    lands on whichever room happens to be the first this worker plays — as a
+    second or two of silence, at the one moment a room is being listened to
+    hardest. Done here it lands on nobody.
+    """
+    def _import() -> None:
+        import yt_dlp  # noqa: F401
+
+    try:
+        await asyncio.to_thread(_import)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # pragma: no cover - a broken install fails later too
+        logger.warning("could not preload yt-dlp: %s", exc)
 
 
 @dataclass
@@ -90,11 +125,13 @@ class Supervisor:
 
         logger.info("worker %s started", self.worker_id)
         wakeups = asyncio.create_task(self._watch_wakeups())
+        warmup = asyncio.create_task(_warm_extractor())
         try:
             while True:
                 # Cleared before the sweep, so a room that goes live *during*
                 # one is picked up by the next instead of being missed.
                 self._wake.clear()
+                swept_at = time.monotonic()
                 try:
                     await self._sweep()
                 except asyncio.CancelledError:
@@ -108,7 +145,14 @@ class Supervisor:
                 # room's life.
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(self._wake.wait(), timeout=SWEEP_INTERVAL_S)
+
+                gap = MIN_SWEEP_GAP_S - (time.monotonic() - swept_at)
+                if gap > 0:
+                    await asyncio.sleep(gap)
         finally:
+            warmup.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await warmup
             wakeups.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await wakeups
@@ -137,23 +181,24 @@ class Supervisor:
 
     # --- Sweep -----------------------------------------------------------
     async def _sweep(self) -> None:
-        for room_id, entry in list(self.active.items()):
-            if entry.task.done():
-                logger.warning("player for room %s exited; releasing", room_id)
-                await self._release(room_id)
+        crashed = [room_id for room_id, entry in self.active.items() if entry.task.done()]
+        for room_id in crashed:
+            logger.warning("player for room %s exited; releasing", room_id)
+        await self._release_all(crashed)
 
         self.cache.sweep(keep=self._protected_keys())
         await self._prune_idle_rooms()
 
         wanted = await self._rooms_needing_playback()
+        wanted_ids = {room.id for room in wanted}
 
         # A room that no longer wants a source loses it here: the last listener
         # left, or the host stopped the stream. Encoder down, mount gone, room
         # untouched — and the queue it had is still there when it comes back.
-        for room_id in list(self.active):
-            if room_id not in {room.id for room in wanted}:
-                logger.info("room %s no longer needs a source; releasing", room_id)
-                await self._release(room_id)
+        stale = [room_id for room_id in self.active if room_id not in wanted_ids]
+        for room_id in stale:
+            logger.info("room %s no longer needs a source; releasing", room_id)
+        await self._release_all(stale)
 
         for room in wanted:
             if room.id in self.active:
@@ -252,6 +297,17 @@ class Supervisor:
             task=asyncio.create_task(player.run()),
             renewer=asyncio.create_task(self._renew(room.id)),
         )
+
+    async def _release_all(self, room_ids: Iterable[uuid.UUID]) -> None:
+        """Let go of several rooms at once.
+
+        One at a time is the obvious way to write this and puts every room's
+        teardown in front of the next room's start: a worker holding a dozen
+        rooms when a deploy lands, or one room whose ffmpeg needs a second to
+        die, and the host who has just pressed "Start stream" somewhere else
+        waits for all of it.
+        """
+        await asyncio.gather(*(self._release(room_id) for room_id in room_ids))
 
     async def _release(self, room_id: uuid.UUID) -> None:
         entry = self.active.pop(room_id, None)

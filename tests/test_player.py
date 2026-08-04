@@ -30,12 +30,21 @@ class FakeDecoder:
 
     def __init__(self) -> None:
         self.terminated = False
+        self.killed = False
+        # Running, like the process this stands in for: the shutdown path reads
+        # this to tell a decoder still holding a file from one already gone.
+        self.returncode: int | None = None
 
     def terminate(self) -> None:
         self.terminated = True
+        self.returncode = -15
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
 
     async def wait(self) -> int:
-        return 0
+        return self.returncode or 0
 
 
 class FakeStdin:
@@ -137,6 +146,82 @@ async def test_a_prepared_decoder_is_thrown_away_when_the_queue_reordered(settin
 async def test_nothing_prepared_is_not_an_error(settings, tmp_path):
     player = make_player(settings, tmp_path)
     assert await player._take_prepared(uuid.uuid4()) is None
+
+
+# --- The cold start ---------------------------------------------------------
+async def test_a_cold_start_does_not_wait_for_the_loudness_analysis(
+    settings, tmp_path, monkeypatch
+):
+    """Getting here means there was no window to measure in, and nothing is on
+    air to cover one now: the analysis decodes the whole track, which is longer
+    than a listener will give a room that has just been switched on. The
+    one-pass filter is what that case is for.
+    """
+    stub_downloads(monkeypatch)
+    player = make_player(settings, tmp_path)
+    player._encoder = FakeEncoder()
+
+    async def never_finishes(key: str, path: Path):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(player._loudness, "measure", never_finishes)
+
+    opened: list[str] = []
+
+    async def fake_open(path: Path, key: str):
+        opened.append(key)
+        return FakeDecoder()
+
+    monkeypatch.setattr(player, "_open_decoder", fake_open)
+
+    decoder = await asyncio.wait_for(
+        player._decoder_for({"id": uuid.uuid4(), "youtube_id": "abc", "title": "Track"}),
+        timeout=2,
+    )
+
+    assert decoder is not None
+    assert opened == ["abc"]
+
+
+# --- Letting go of a process ------------------------------------------------
+async def test_a_decoder_that_exits_when_asked_is_not_killed():
+    decoder = FakeDecoder()
+
+    await player_module._end_process(decoder)
+
+    assert decoder.terminated
+    assert not decoder.killed
+
+
+async def test_a_decoder_that_ignores_the_first_signal_is_killed(monkeypatch):
+    """The timeout used to leave it running -- still holding its file and its
+    share of the CPU, on a worker that had already moved on."""
+    monkeypatch.setattr(player_module, "TERMINATE_GRACE_S", 0.01)
+
+    class Stubborn(FakeDecoder):
+        def terminate(self) -> None:
+            self.terminated = True  # and carries on running
+
+        async def wait(self) -> int:
+            while self.returncode is None:
+                await asyncio.sleep(0.001)
+            return self.returncode
+
+    process = Stubborn()
+    await asyncio.wait_for(player_module._end_process(process), timeout=2)
+
+    assert process.terminated
+    assert process.killed
+
+
+async def test_a_process_that_has_already_exited_is_left_alone():
+    decoder = FakeDecoder()
+    decoder.returncode = 0
+
+    await player_module._end_process(decoder)
+
+    assert not decoder.terminated
+    assert not decoder.killed
 
 
 async def test_protected_keys_cover_playing_prepared_and_in_flight(settings, tmp_path, monkeypatch):
