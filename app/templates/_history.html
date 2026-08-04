@@ -1,5 +1,12 @@
 {# Titles link out to the source. A room plays what its listeners linked to, so
-   "where was that from" has an obvious answer and no reason to be hidden. #}
+   "where was that from" has an obvious answer and no reason to be hidden.
+
+   Every row also offers the song back to the queue, because "play that again"
+   is the one thing a history is asked for. It is offered once: while the song
+   is waiting or on air the row says so instead, and the button returns after it
+   has played again — which is the difference between a second chance and a way
+   to loop one song. Re-adding is a new submission by whoever pressed it, so it
+   takes their turn and their pending limit like anything else they queue. #}
 {% for track in history %}
 <div class="list-row">
     <div class="queue-body">
@@ -18,6 +25,22 @@
             <span aria-hidden="true">·</span><span>{{ track.started_at | ago }}</span>
             {% endif %}
         </div>
+    </div>
+
+    <div class="queue-actions ms-2">
+        {% if track.youtube_id == on_air_id %}
+        <span class="badge-soft">on air</span>
+        {% elif track.youtube_id in queued_ids %}
+        <span class="badge-soft">queued</span>
+        {% else %}
+        <button type="button" class="vote-btn" data-action="requeue"
+                data-youtube="{{ track.youtube_id }}"
+                title="{{ add_disabled_reason or 'Queue this again' }}"
+                aria-label="Queue {{ track.title }} again"
+                {{ 'disabled' if add_disabled_reason }}>
+            <i class="bi bi-arrow-counterclockwise"></i>
+        </button>
+        {% endif %}
     </div>
 </div>
 {% endfor %}
