@@ -210,17 +210,3 @@ class RosterRow(BaseModel):
     avatar: str
     is_host: bool
     is_me: bool
-
-
-# --- Meta -------------------------------------------------------------------
-class MetaOut(BaseModel):
-    app_name: str
-    version: str
-    seo_enabled: bool
-    seo_site_name: str
-    seo_description: str
-    imprint_enabled: bool
-    data_location: str
-    contact_links: list[dict]
-    contact_email: list[str] | None = None
-    license_email: list[str] | None = None

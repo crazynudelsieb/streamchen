@@ -1,5 +1,4 @@
-{# Titles link out to the source. A room plays what its listeners linked to, so
-   "where was that from" has an obvious answer and no reason to be hidden.
+{# Titles link out to the source (see the track_link macro).
 
    Every row also offers the song back to the queue, because "play that again"
    is the one thing a history is asked for. It is offered once: while the song
@@ -7,14 +6,11 @@
    has played again — which is the difference between a second chance and a way
    to loop one song. Re-adding is a new submission by whoever pressed it, so it
    takes their turn and their pending limit like anything else they queue. #}
+{% from "_macros.html" import track_link %}
 {% for track in history %}
 <div class="list-row">
     <div class="queue-body">
-        <div class="queue-title">
-            <a class="track-link" href="https://www.youtube.com/watch?v={{ track.youtube_id }}"
-               target="_blank" rel="noopener noreferrer nofollow"
-               title="{{ track.title }} — open on YouTube">{{ track.title }}</a>
-        </div>
+        <div class="queue-title">{{ track_link(track) }}</div>
         <div class="queue-meta d-flex align-items-center gap-1 flex-wrap">
             <span>{{ track.duration_s | duration }}</span>
             <span aria-hidden="true">·</span>

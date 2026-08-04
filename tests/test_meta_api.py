@@ -1,65 +1,40 @@
-"""The instance metadata the footer renders."""
+"""Liveness, and the instance metadata that reaches a page.
+
+The metadata itself is asserted where it is rendered (``test_web_pages.py``):
+the pages get it from the Jinja globals, and there is no JSON copy of it.
+"""
 
 from __future__ import annotations
 
-import pytest
-
 from app import __version__
-from app.config import Settings
-
-
-async def test_meta_reports_the_running_version(client):
-    payload = (await client.get("/api/meta")).json()
-    assert payload["version"] == __version__
-    assert payload["app_name"] == "streamchen"
-
-
-async def test_the_license_contact_is_never_a_literal_address(client):
-    payload = (await client.get("/api/meta")).json()
-    assert payload["license_email"] == ["appchen", "outlook.at"]
-    assert "appchen@outlook.at" not in (await client.get("/api/meta")).text
 
 
 async def test_health_check_answers(client):
     response = await client.get("/api/healthz")
+
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert response.json()["version"] == __version__
 
 
-async def test_bootstrapping_meta_hands_out_both_cookies(api):
+async def test_static_urls_carry_the_running_version(client):
+    """What makes the immutable cache header on /static/ safe across releases."""
+    assert f"?v={__version__}" in (await client.get("/")).text
+
+
+async def test_the_license_contact_is_never_a_literal_address(client):
+    page = (await client.get("/")).text
+
+    assert "appchen@outlook.at" not in page
+    assert 'data-user="appchen"' in page
+    assert 'data-domain="outlook.at"' in page
+
+
+async def test_a_first_request_hands_out_both_cookies(api):
     from httpx import ASGITransport, AsyncClient
 
     async with AsyncClient(transport=ASGITransport(app=api), base_url="http://test") as client:
-        await client.get("/api/meta")
+        await client.get("/api/healthz")
+
         assert client.cookies["sc_session"]
         assert client.cookies["sc_csrf"]
-
-
-class TestConfiguredInstance:
-    @pytest.fixture
-    def settings(self) -> Settings:
-        return Settings(
-            database_url="sqlite+aiosqlite://",
-            redis_url="redis://localhost:6379/0",
-            base_url="http://test",
-            contact_email="hello@example.com",
-            contact_github="crazynudelsieb",
-            imprint_name="Example Operator",
-            imprint_address="Example Street 1\n1010 Vienna",
-            data_location="Austria",
-        )
-
-    async def test_configured_channels_reach_the_footer(self, client):
-        payload = (await client.get("/api/meta")).json()
-
-        assert payload["contact_email"] == ["hello", "example.com"]
-        assert [link["key"] for link in payload["contact_links"]] == ["github"]
-        assert payload["imprint_enabled"] is True
-        assert payload["data_location"] == "Austria"
-
-    async def test_the_imprint_page_gets_its_details(self, client):
-        payload = (await client.get("/api/imprint")).json()
-
-        assert payload["name"] == "Example Operator"
-        assert payload["address"].splitlines() == ["Example Street 1", "1010 Vienna"]
-        assert payload["email"] == ["hello", "example.com"]

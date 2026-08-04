@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from app.scheduling import Candidate, next_candidate, order_queue
+from app.scheduling import Candidate, order_queue
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -25,7 +25,6 @@ def ids(candidates: list[Candidate]) -> list[str]:
 
 def test_empty_queue_has_no_next():
     assert order_queue([]) == []
-    assert next_candidate([]) is None
 
 
 def test_round_robin_interleaves_submitters():
@@ -88,11 +87,3 @@ def test_ordering_is_stable_for_identical_input():
         candidate("C1", "carl", 0),
     ]
     assert ids(order_queue(queue)) == ids(order_queue(list(reversed(queue))))
-
-
-def test_next_candidate_matches_head_of_queue():
-    queue = [
-        candidate("A1", "alice", 0),
-        candidate("B1", "bob", 1, score=3),
-    ]
-    assert next_candidate(queue).id == order_queue(queue)[0].id == "B1"

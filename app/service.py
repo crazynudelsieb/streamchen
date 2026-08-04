@@ -11,7 +11,7 @@ import uuid
 from datetime import timedelta
 
 from redis.asyncio import Redis
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -19,7 +19,6 @@ from app import events
 from app.avatars import avatar_seed, listener_seed, new_seed
 from app.config import Settings
 from app.models import (
-    FINISHED_STATES,
     STATE_PLAYED,
     STATE_PLAYING,
     STATE_QUEUED,
@@ -34,6 +33,7 @@ from app.models import (
 from app.scheduling import Candidate, order_queue
 from app.schemas import ListenerInfo, NowPlaying, RoomSettings, TrackOut
 from app.security import hash_secret, new_host_secret, new_room_token
+from app.text import fold_to_line
 
 HISTORY_LIMIT = 20
 
@@ -67,16 +67,8 @@ DISPLAY_NAME_MAX = 40
 
 def clean_display_name(value: str | None) -> str:
     """A name a listener actually chose, or "" if what they sent amounts to
-    nothing.
-
-    Odd characters are cleaned up rather than rejected: a name arriving with a
-    stray line break is a paste, not an attack, and the queue has to render it
-    on one line either way. Whitespace is folded *before* unprintables are
-    dropped, so a line break separates two words instead of welding them
-    together, and zero-width characters cannot smuggle in an invisible name.
-    """
-    words = ("".join(char for char in word if char.isprintable()) for word in (value or "").split())
-    return " ".join(word for word in words if word)[:DISPLAY_NAME_MAX].strip()
+    nothing. Same folding a chat line gets (see ``app.text``)."""
+    return fold_to_line(value, DISPLAY_NAME_MAX)
 
 
 # --- Lookups ----------------------------------------------------------------
@@ -175,6 +167,22 @@ async def radio_listener(db: AsyncSession, room: Room) -> Listener:
     return listener
 
 
+def touch_listener(room: Room, listener: Listener, *, as_host: bool = False) -> Listener:
+    """Mark somebody already in the room as still here.
+
+    Split out of ``join_room`` for the request path, which has looked the
+    listener up already and must not pay for that query twice (app/api/deps.py).
+    """
+    listener.last_seen_at = utcnow()
+    # Someone with the room open is reason enough to keep it alive: it is what
+    # stops the worker letting go of a room whose listeners are just listening,
+    # and what lets autoplay carry a quiet room.
+    room.last_active_at = listener.last_seen_at
+    if as_host:
+        listener.is_host = True
+    return listener
+
+
 async def join_room(
     db: AsyncSession,
     room: Room,
@@ -185,14 +193,7 @@ async def join_room(
     """Idempotent: the same session rejoining is the same listener."""
     listener = await get_listener(db, room.id, session_id)
     if listener is not None:
-        listener.last_seen_at = utcnow()
-        # Someone with the room open is reason enough to keep it alive: it is
-        # what stops the worker letting go of a room whose listeners are just
-        # listening, and what lets autoplay carry a quiet room.
-        room.last_active_at = listener.last_seen_at
-        if as_host:
-            listener.is_host = True
-        return listener
+        return touch_listener(room, listener, as_host=as_host)
 
     listener = Listener(
         room_id=room.id,
@@ -235,16 +236,20 @@ async def reroll_avatar(db: AsyncSession, listener: Listener) -> Listener:
 
 
 # --- Queue ------------------------------------------------------------------
-def _track_query(room_id: uuid.UUID):
-    return (
-        select(Track)
-        .where(Track.room_id == room_id)
-        .options(selectinload(Track.votes), selectinload(Track.added_by))
-    )
+def _track_query(room_id: uuid.UUID, *, with_submitter: bool = True):
+    """``Track.votes`` is ``lazy="selectin"`` on the model, so scores come along
+    without asking. Who submitted a track is only needed by what renders it —
+    the worker polls this every couple of seconds and never looks."""
+    query = select(Track).where(Track.room_id == room_id)
+    return query.options(selectinload(Track.added_by)) if with_submitter else query
 
 
 async def queued_tracks(
-    db: AsyncSession, room_id: uuid.UUID, *, include_shadow_for: uuid.UUID | None = None
+    db: AsyncSession,
+    room_id: uuid.UUID,
+    *,
+    include_shadow_for: uuid.UUID | None = None,
+    with_submitter: bool = True,
 ) -> list[Track]:
     """Pending tracks in play order.
 
@@ -252,7 +257,9 @@ async def queued_tracks(
     back into their view, so nothing tells them they have been muted.
     """
     result = await db.execute(
-        _track_query(room_id).where(Track.state == STATE_QUEUED).order_by(Track.created_at)
+        _track_query(room_id, with_submitter=with_submitter)
+        .where(Track.state == STATE_QUEUED)
+        .order_by(Track.created_at)
     )
     tracks = list(result.scalars().all())
 
@@ -280,7 +287,7 @@ async def queued_tracks(
 
 async def playable_tracks(db: AsyncSession, room_id: uuid.UUID) -> list[Track]:
     """What the worker may play: never a shadowed submission."""
-    return await queued_tracks(db, room_id, include_shadow_for=None)
+    return await queued_tracks(db, room_id, include_shadow_for=None, with_submitter=False)
 
 
 async def current_track(db: AsyncSession, room_id: uuid.UUID) -> Track | None:
@@ -309,6 +316,20 @@ async def pending_count_for(db: AsyncSession, room_id: uuid.UUID, listener_id: u
         )
     )
     return int(result.scalar_one())
+
+
+async def pending_counts(db: AsyncSession, room_id: uuid.UUID) -> dict[uuid.UUID, int]:
+    """How much of the queue is whose, for the whole room in one statement.
+
+    The host's listener list needs this for every name in it, and every session
+    that ever opened the link is a name in it.
+    """
+    result = await db.execute(
+        select(Track.added_by_id, func.count(Track.id))
+        .where(Track.room_id == room_id, Track.state == STATE_QUEUED)
+        .group_by(Track.added_by_id)
+    )
+    return {listener_id: count for listener_id, count in result.all()}
 
 
 async def is_duplicate(db: AsyncSession, room_id: uuid.UUID, youtube_id: str) -> bool:
@@ -357,13 +378,14 @@ async def set_vote(
 
 async def prune_idle_rooms(db: AsyncSession, settings: Settings) -> int:
     """Drop rooms nobody has touched in a while. Rooms are disposable by
-    design and this is the only cleanup the system needs."""
+    design and this is the only cleanup the system needs.
+
+    One statement: listeners, tracks and votes hang off the room by ``ON DELETE
+    CASCADE``, so the database removes them without any of it being loaded here.
+    """
     cutoff = utcnow() - timedelta(days=settings.room_idle_days)
-    result = await db.execute(select(Room).where(Room.last_active_at < cutoff))
-    rooms = list(result.scalars().all())
-    for room in rooms:
-        await db.delete(room)
-    return len(rooms)
+    result = await db.execute(delete(Room).where(Room.last_active_at < cutoff))
+    return int(result.rowcount or 0)
 
 
 # --- Serialization ----------------------------------------------------------
@@ -438,7 +460,6 @@ def now_playing(track: Track | None, viewer: Listener | None, position_s: float)
 
 __all__ = [
     "DISPLAY_NAME_MAX",
-    "FINISHED_STATES",
     "RADIO_DISPLAY_NAME",
     "RADIO_SESSION_ID",
     "clean_display_name",
@@ -455,6 +476,7 @@ __all__ = [
     "now_playing",
     "online_listeners",
     "pending_count_for",
+    "pending_counts",
     "playable_tracks",
     "prune_idle_rooms",
     "queued_tracks",
@@ -467,4 +489,5 @@ __all__ = [
     "serialize_track",
     "set_vote",
     "stream_url",
+    "touch_listener",
 ]

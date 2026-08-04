@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+from httpx import ASGITransport, AsyncClient
+
 from app.security import (
     hash_secret,
     is_valid_room_token,
@@ -47,3 +50,28 @@ def test_token_comparison_rejects_empties():
     assert not tokens_equal("abc", "abd")
     assert not tokens_equal(None, None)
     assert not tokens_equal("", "")
+
+
+# --- The session cookie and the cache -----------------------------------------
+@pytest.mark.parametrize("path", ["/static/app.js", "/a/abcdef123456.svg"])
+async def test_a_publicly_cacheable_asset_carries_nobody_s_session(api, path):
+    """``public`` invites a shared cache to keep one copy for everybody. A
+    Set-Cookie stored alongside it would hand one visitor's session to every
+    other visitor, so the two headers must never appear on one response."""
+    async with AsyncClient(transport=ASGITransport(app=api), base_url="http://test") as client:
+        response = await client.get(path)
+
+    assert "immutable" in response.headers["cache-control"]
+    assert "set-cookie" not in response.headers
+    assert not client.cookies
+
+
+async def test_a_page_still_hands_out_the_session(api):
+    """The other half: the session has to come from somewhere, and it is every
+    request that is not a content-addressed asset."""
+    async with AsyncClient(transport=ASGITransport(app=api), base_url="http://test") as client:
+        response = await client.get("/")
+
+        assert "no-store" in response.headers["cache-control"]
+        assert client.cookies["sc_session"]
+        assert client.cookies["sc_csrf"]

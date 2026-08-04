@@ -181,7 +181,17 @@ class Supervisor:
 
     # --- Sweep -----------------------------------------------------------
     async def _sweep(self) -> None:
-        crashed = [room_id for room_id, entry in self.active.items() if entry.task.done()]
+        # A room is ours only while *both* halves still hold: the player is
+        # running, and the renewer still owns the lock. The renewer returns
+        # when the lock has gone to somebody else -- if that did not release
+        # the room here, this worker would keep encoding a mount a second
+        # worker has already taken over, which is the one thing the lock
+        # exists to prevent.
+        crashed = [
+            room_id
+            for room_id, entry in self.active.items()
+            if entry.task.done() or entry.renewer.done()
+        ]
         for room_id in crashed:
             logger.warning("player for room %s exited; releasing", room_id)
         await self._release_all(crashed)

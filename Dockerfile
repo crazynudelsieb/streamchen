@@ -8,9 +8,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# No libpq: asyncpg speaks the Postgres wire protocol itself, so nothing here
+# links against it. libffi is for argon2-cffi.
 RUN apt-get update && apt-get install -y \
     build-essential \
-    libpq-dev \
     libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -42,7 +43,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     XDG_CACHE_HOME=/var/cache/streamchen-extractor
 
 RUN apt-get update && apt-get install -y \
-    libpq5 \
     curl \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean

@@ -32,7 +32,7 @@ def ws_client(monkeypatch):
         add_rate_limit=100,
     )
     with TestClient(create_app(settings)) as client:
-        client.get("/api/meta")
+        client.get("/api/healthz")
         client.headers["X-CSRF-Token"] = client.cookies["sc_csrf"]
         yield client
 

@@ -26,6 +26,7 @@ from redis.asyncio import Redis
 
 from app.avatars import listener_seed
 from app.models import Listener
+from app.text import fold_to_line
 
 # What a room remembers. Enough that somebody arriving mid-conversation can see
 # what is being talked about, short enough to stay a few kilobytes.
@@ -46,12 +47,10 @@ def clean_message(value: str | None) -> str:
     """The text as it will be shown, or "" if it amounts to nothing.
 
     Folded onto one line and stripped of unprintables for the same reason
-    display names are (see ``service.clean_display_name``): a message is
-    rendered in a fixed row, and a wall of newlines or zero-width padding is a
-    way to take that row over.
+    display names are (see ``app.text``): a message is rendered in a fixed row,
+    and a wall of newlines or zero-width padding is a way to take that row over.
     """
-    words = ("".join(char for char in word if char.isprintable()) for word in (value or "").split())
-    return " ".join(word for word in words if word)[:MESSAGE_MAX_LENGTH]
+    return fold_to_line(value, MESSAGE_MAX_LENGTH)
 
 
 def message_for(listener: Listener, text: str) -> dict:
@@ -92,16 +91,11 @@ async def recent(redis: Redis, room_id: uuid.UUID | str, limit: int = HISTORY_LI
     return messages
 
 
-async def clear(redis: Redis, room_id: uuid.UUID | str) -> None:
-    await redis.delete(key(room_id))
-
-
 __all__ = [
     "HISTORY_LIMIT",
     "HISTORY_TTL_S",
     "MESSAGE_MAX_LENGTH",
     "clean_message",
-    "clear",
     "key",
     "message_for",
     "recent",

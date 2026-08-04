@@ -56,6 +56,7 @@ from app.worker.pipeline import (
     seconds_of,
     silence_chunk,
 )
+from app.worker.tasks import SharedTasks, retrieve_failure
 from app.youtube import YouTubeError
 
 logger = logging.getLogger(__name__)
@@ -117,11 +118,11 @@ class Downloads:
 
     def __init__(self, cache: AudioCache) -> None:
         self._cache = cache
-        self._tasks: dict[str, asyncio.Task[Path]] = {}
+        self._tasks: SharedTasks[Path] = SharedTasks()
 
     @property
     def pending(self) -> set[str]:
-        return {key for key, task in self._tasks.items() if not task.done()}
+        return self._tasks.pending
 
     async def fetch(self, youtube_id: str, keep: Iterable[str] = ()) -> Path:
         """The track's file, downloading it only if nobody else already is."""
@@ -129,20 +130,10 @@ class Downloads:
         if existing is not None:
             return existing
 
-        task = self._tasks.get(youtube_id)
-        if task is None or task.done():
-            task = asyncio.create_task(
-                asyncio.to_thread(download_audio, youtube_id, self._cache.directory)
-            )
-            task.add_done_callback(_retrieve_failure)
-            self._tasks = {key: t for key, t in self._tasks.items() if not t.done()}
-            self._tasks[youtube_id] = task
-
-        # Shielded on purpose: the caller waiting on this may be cancelled — a
-        # skip, a lost room lock, the end of the track it was preparing for —
-        # and abandoning a download that is nearly done is how a boundary ends
-        # up paying for it twice.
-        path = await asyncio.shield(task)
+        path = await self._tasks.run(
+            youtube_id,
+            lambda: asyncio.to_thread(download_audio, youtube_id, self._cache.directory),
+        )
         self._cache.enforce_budget(keep=(youtube_id, *keep))
         return path
 
@@ -154,16 +145,7 @@ class Downloads:
         after this returns. It is removed by the purge the next worker startup
         does, which is the same guarantee a killed worker has always relied on.
         """
-        for task in self._tasks.values():
-            task.cancel()
-        self._tasks.clear()
-
-
-def _retrieve_failure(task: asyncio.Task) -> None:
-    """A download whose only caller went away still has to have its exception
-    looked at, or asyncio complains when the task is collected."""
-    if not task.cancelled():
-        task.exception()
+        self._tasks.abandon()
 
 
 # How long an ffmpeg gets to exit on its own before it is killed. Every one of
@@ -454,7 +436,7 @@ class RoomPlayer:
         if not self._news_due():
             return
         self._news_task = asyncio.create_task(self._prepare_news())
-        self._news_task.add_done_callback(_retrieve_failure)
+        self._news_task.add_done_callback(retrieve_failure)
 
     async def _prepare_news(self) -> None:
         """Resolve the room's next bulletin and put its audio in the cache."""
@@ -761,7 +743,7 @@ class RoomPlayer:
             # real one, so the next attempt waits on it instead of starting
             # over.
             task.cancel()
-            task.add_done_callback(_retrieve_failure)
+            task.add_done_callback(retrieve_failure)
             raise
         return await task
 

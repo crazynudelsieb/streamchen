@@ -8,6 +8,7 @@ that reconnects lands at the right place without waiting for the next tick.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from redis.asyncio import Redis
@@ -15,9 +16,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import news
 from app.events import get_now_playing
-from app.models import Listener
-from app.schemas import BulletinOut, NowPlaying
-from app.service import current_track, now_playing
+from app.models import Listener, Room
+from app.schemas import BulletinOut, NowPlaying, TrackOut
+from app.service import (
+    current_track,
+    now_playing,
+    online_listeners,
+    queued_tracks,
+    recent_tracks,
+    serialize_track,
+)
 
 # How long past its own length a bulletin may still claim to be on air. The
 # worker overwrites the key on the next transition, but a worker that was
@@ -32,7 +40,7 @@ def _elapsed(state: dict) -> float | None:
         return None
     try:
         started = float(started_at)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     return max(0.0, round(datetime.now(UTC).timestamp() - started, 2))
 
@@ -99,3 +107,38 @@ async def now_playing_state(
 
     bulletin, position = on_air
     return NowPlaying(track=None, bulletin=bulletin, position_s=position)
+
+
+@dataclass(frozen=True)
+class RoomView:
+    """What a room looks like right now, as one listener sees it."""
+
+    now_playing: NowPlaying
+    queue: list[TrackOut]
+    history: list[TrackOut]
+    listeners: int
+
+
+async def room_view(db: AsyncSession, redis: Redis, room: Room, listener: Listener) -> RoomView:
+    """Gather the room in one place.
+
+    The JSON snapshot and the rendered page are two projections of this and
+    nothing else. Assembled twice, they drift: the same six reads have to agree
+    about who is online, what is on air and what a shadow-banned listener is
+    allowed to see, and "the same, in two files" is not a way to guarantee that.
+    """
+    state = await now_playing_state(db, redis, room.id, listener)
+
+    queue = [
+        serialize_track(track, listener)
+        for track in await queued_tracks(db, room.id, include_shadow_for=listener.id)
+    ]
+    history = [serialize_track(track, listener) for track in await recent_tracks(db, room.id)]
+
+    # Present *and* still a listener here -- see service.online_listeners for
+    # why presence on its own would show people who are no longer in the room.
+    # Presence is written just after the join, so a snapshot taken in between
+    # finds none; the viewer holding this request is at least here.
+    online = len(await online_listeners(db, redis, room.id)) or 1
+
+    return RoomView(now_playing=state, queue=queue, history=history, listeners=online)

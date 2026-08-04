@@ -210,11 +210,7 @@ def _metadata_key(youtube_id: str) -> str:
     return f"streamchen:meta:{youtube_id}"
 
 
-def _stream_key(youtube_id: str) -> str:
-    return f"streamchen:stream:{youtube_id}"
-
-
-def _extract(youtube_id: str, *, for_playback: bool) -> dict[str, Any]:
+def _extract(youtube_id: str) -> dict[str, Any]:
     """Blocking yt-dlp call. Always run through ``asyncio.to_thread``."""
     from yt_dlp import YoutubeDL  # imported here: the API path rarely needs it
 
@@ -232,10 +228,6 @@ def _extract(youtube_id: str, *, for_playback: bool) -> dict[str, Any]:
 
     if not info:
         raise YouTubeError("could not resolve video")
-    if for_playback and not info.get("url"):
-        # A geo-blocked or age-gated video still resolves, just without a
-        # playable stream. Better to fail here than to hand ffmpeg nothing.
-        raise YouTubeError("no playable audio stream")
     return info
 
 
@@ -268,7 +260,7 @@ async def fetch_metadata(
             pass  # poisoned entry; fall through and re-extract
 
     try:
-        info = await asyncio.to_thread(_extract, youtube_id, for_playback=False)
+        info = await asyncio.to_thread(_extract, youtube_id)
     except YouTubeError:
         raise
     except Exception as exc:  # yt-dlp raises its own hierarchy
@@ -927,21 +919,3 @@ async def playlist_candidates(
     if is_dynamic_mix(url):
         return await mix_candidates(redis, url)
     return await _cached_candidates(redis, _playlist_key(url), url, limit, ttl_s)
-
-
-async def resolve_stream_url(redis: Redis, youtube_id: str, ttl_s: int = 300) -> str:
-    """Direct audio URL for ffmpeg. Short TTL — these expire upstream."""
-    cached = await redis.get(_stream_key(youtube_id))
-    if cached:
-        return cached.decode("utf-8") if isinstance(cached, bytes) else cached
-
-    try:
-        info = await asyncio.to_thread(_extract, youtube_id, for_playback=True)
-    except YouTubeError:
-        raise
-    except Exception as exc:
-        raise YouTubeError(str(exc)[:200]) from exc
-
-    url = info["url"]
-    await redis.set(_stream_key(youtube_id), url, ex=ttl_s)
-    return url

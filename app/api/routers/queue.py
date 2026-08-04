@@ -212,7 +212,7 @@ async def _load_track(db: AsyncSession, room: Room, track_id: uuid.UUID) -> Trac
     result = await db.execute(
         select(Track)
         .where(Track.id == track_id, Track.room_id == room.id)
-        .options(selectinload(Track.votes), selectinload(Track.added_by))
+        .options(selectinload(Track.added_by))  # votes come with the model
     )
     track = result.scalar_one_or_none()
     if track is None:

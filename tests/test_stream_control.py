@@ -8,6 +8,7 @@ link are the room, and none of them depend on anything being on the air.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 
@@ -21,6 +22,7 @@ from app.config import Settings
 from app.database import create_engine, create_schema, create_sessionmaker
 from app.models import STATE_QUEUED, Listener, Room, Track, utcnow
 from app.security import hash_secret, new_room_token
+from app.worker.player import RoomPlayer
 from app.worker.supervisor import STARTUP_GRACE, Supervisor
 from tests.conftest import video_id, watch_url
 from tests.test_worker_wakeup import wake_messages
@@ -201,6 +203,52 @@ async def test_starting_the_stream_again_makes_it_wanted(supervisor):
     assert room.id in await wanted(supervisor)
 
 
+# --- Exactly one worker per room ---------------------------------------------
+class TestALostLock:
+    """The lock is what stops two workers encoding into one mount.
+
+    Losing it is not a crash: the player is running perfectly well, and only the
+    renewer has noticed. A sweep that asks after the player alone therefore
+    leaves this worker playing a room another worker has already taken over —
+    two encoders on one mount, which is the one thing the lock is for.
+    """
+
+    @pytest.fixture
+    def worker_settings(self) -> Settings:
+        return Settings(
+            database_url="sqlite+aiosqlite://",
+            redis_url="redis://localhost:6379/0",
+            base_url="http://test",
+            # The renewer checks every ttl // 3 seconds; short enough to observe.
+            worker_lock_ttl_s=3,
+        )
+
+    @pytest.fixture(autouse=True)
+    def _player_that_never_exits(self, monkeypatch) -> None:
+        async def never_returns(self) -> None:
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(RoomPlayer, "run", never_returns)
+
+    async def test_the_room_is_let_go_of_while_its_player_is_still_healthy(self, supervisor):
+        room = await make_room(supervisor, stream_stopped=False)
+        await events.mark_present(supervisor.redis, room.id, "session-1")
+
+        await supervisor._sweep()
+        assert room.id in supervisor.active
+        assert not supervisor.active[room.id].task.done()
+
+        # What an expiry this worker slept through looks like from here.
+        await supervisor.redis.set(events.worker_lock_key(room.id), "another-worker")
+        await asyncio.sleep(1.5)  # one renewal interval, max(1, 3 // 3)
+
+        await supervisor._sweep()
+
+        assert room.id not in supervisor.active
+        # And the room is not quietly taken back: the other worker still holds it.
+        assert await supervisor.redis.get(events.worker_lock_key(room.id)) == "another-worker"
+
+
 # --- Presence, cheaply -------------------------------------------------------
 async def test_presence_marks_the_room_as_live(supervisor):
     room = await make_room(supervisor)
@@ -295,8 +343,8 @@ async def test_presence_is_answered_per_session(supervisor):
     room = await make_room(supervisor)
     await events.mark_present(supervisor.redis, room.id, "session-1")
 
-    assert await events.is_present(supervisor.redis, room.id, "session-1") is True
-    assert await events.is_present(supervisor.redis, room.id, "session-2") is False
+    present = await events.present_sessions(supervisor.redis, room.id)
+    assert present == {"session-1"}
 
 
 async def test_presence_never_scans_the_keyspace(supervisor):

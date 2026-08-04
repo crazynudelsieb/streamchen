@@ -203,7 +203,7 @@ async def test_clients_do_not_share_a_rate_limit_bucket(api, room):
 
     async with first, second:
         for client in (first, second):
-            await client.get("/api/meta")
+            await client.get("/api/healthz")
             client.headers["X-CSRF-Token"] = client.cookies["sc_csrf"]
 
         assert (await add(first, room["token"], 100)).status_code == 201

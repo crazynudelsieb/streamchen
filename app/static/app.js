@@ -8,6 +8,11 @@
   'use strict';
 
   // ---- Helpers -------------------------------------------------------------
+  /* Named by the server (base.html), because the name is configurable and this
+   * file is cached for a year — a client that guessed it would keep guessing
+   * the old one across a config change. */
+  var CSRF_COOKIE = document.documentElement.getAttribute('data-csrf-cookie') || 'sc_csrf';
+
   function cookie(name) {
     var match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
     return match ? decodeURIComponent(match[1]) : null;
@@ -43,7 +48,7 @@
 
     var method = options.method || 'GET';
     if (method !== 'GET' && method !== 'HEAD') {
-      var csrf = cookie('sc_csrf');
+      var csrf = cookie(CSRF_COOKIE);
       if (csrf) headers['X-CSRF-Token'] = csrf;
     }
 
@@ -765,25 +770,32 @@
   }
 
   /* Stopping the stream keeps the room: the queue, the listeners and the link
-   * are all still there, and the audio source is not. */
+   * are all still there, and the audio source is not.
+   *
+   * Two buttons offer this — the one beside the player and the one in the host
+   * panel — and they are one request. Which of them was pressed decides only
+   * what gets disabled while it is in flight; setStreamStopped puts both back
+   * in step afterwards, so it cannot matter which one the host reaches for. */
+  function toggleStream(token, button) {
+    var stopping = button.getAttribute('data-stopped') !== '1';
+    button.disabled = true;
+
+    return api('/rooms/' + token, {
+      method: 'PATCH', body: { stream_stopped: stopping }, token: token
+    })
+      .then(function (state) {
+        setStreamStopped(state.settings.stream_stopped);
+        toast(stopping ? 'Stream stopped. The room stays.' : 'Stream starting…', 'success');
+      })
+      .catch(function (error) { toast(error.message || 'Could not do that', 'danger'); })
+      .finally(function () { button.disabled = false; });
+  }
+
   function wireStreamToggle(token) {
     var button = document.getElementById('streamToggle');
     if (!button) return;
 
-    button.addEventListener('click', function () {
-      var stopping = button.getAttribute('data-stopped') !== '1';
-      button.disabled = true;
-
-      api('/rooms/' + token, {
-        method: 'PATCH', body: { stream_stopped: stopping }, token: token
-      })
-        .then(function (state) {
-          setStreamStopped(state.settings.stream_stopped);
-          toast(stopping ? 'Stream stopped. The room stays.' : 'Stream starting…', 'success');
-        })
-        .catch(function (error) { toast(error.message || 'Could not do that', 'danger'); })
-        .finally(function () { button.disabled = false; });
-    });
+    button.addEventListener('click', function () { toggleStream(token, button); });
   }
 
   function setStreamStopped(stopped) {
@@ -1148,10 +1160,7 @@
       } else if (action === 'news') {
         patch({ news_enabled: root.getAttribute('data-news') !== '1' });
       } else if (action === 'stream') {
-        var stopping = button.getAttribute('data-stopped') !== '1';
-        patch({ stream_stopped: stopping }, false).then(function (state) {
-          if (state) setStreamStopped(state.settings.stream_stopped);
-        });
+        toggleStream(token, button);
       } else if (action === 'playlist') {
         patch({ fallback_playlist: document.getElementById('fallbackPlaylist').value }, false)
           .then(function () { toast('Radio playlist saved', 'success'); });

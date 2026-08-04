@@ -1,5 +1,6 @@
 {# Swapped whenever the queue changes. Buttons carry their data in attributes
    so app.js can act on them with one delegated listener. #}
+{% from "_macros.html" import track_link %}
 {% if not queue %}
 <div class="text-center text-muted py-4">
     <i class="bi bi-music-note-list d-block mb-2" style="font-size: 2rem"></i>
@@ -17,11 +18,7 @@
     {% endif %}
 
     <div class="queue-body">
-        <div class="queue-title">
-            <a class="track-link" href="https://www.youtube.com/watch?v={{ track.youtube_id }}"
-               target="_blank" rel="noopener noreferrer nofollow"
-               title="{{ track.title }} — open on YouTube">{{ track.title }}</a>
-        </div>
+        <div class="queue-title">{{ track_link(track) }}</div>
         <div class="queue-meta d-flex align-items-center gap-1 flex-wrap">
             <span>{{ track.duration_s | duration }}</span>
             <span aria-hidden="true">·</span>
