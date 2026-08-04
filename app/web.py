@@ -261,6 +261,14 @@ async def _room_context(
     ]
     history = [serialize_track(track, listener) for track in await recent_tracks(db, room.id)]
 
+    # What the history may not offer again yet. A played song can be queued back
+    # once, and only once: while it is waiting or on air its row says so instead
+    # of offering it, and the offer returns after it has played again. Derived
+    # from what this context already knows rather than asked for separately, so
+    # a row and the queue right above it can never disagree.
+    on_air_id = state.track.youtube_id if state.track else None
+    queued_ids = {track.youtube_id for track in queue}
+
     # Present *and* still a listener here -- see service.online_listeners for
     # why presence on its own would show people who are no longer in the room.
     online = len(await online_listeners(db, redis, room.id)) or 1
@@ -293,6 +301,8 @@ async def _room_context(
         "news_source": settings.news_source_label,
         "queue": queue,
         "history": history,
+        "queued_ids": queued_ids,
+        "on_air_id": on_air_id,
         "voting_enabled": room.voting_enabled,
         "add_disabled_reason": add_disabled_reason,
         "stream_url": stream_url(settings, room),

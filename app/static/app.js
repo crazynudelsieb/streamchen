@@ -535,30 +535,61 @@
     root.classList.toggle('stream-off', stopped);
     render();
     updateMediaSession();
+    markPosition();
     startTicker();
   }
 
-  /* The progress bar advances locally between server updates; the server is
-   * still the authority, and every fragment swap resets it. */
+  /* When the server last said where the track was, on the monotonic clock. The
+   * bar advances locally between those, but never on its own authority. */
+  var positionAt = 0;
+
+  function playerBody() {
+    return document.querySelector('#nowPlaying .player-body[data-duration]');
+  }
+
+  /* What the server last said, plus however long ago it said it.
+   *
+   * Adding a second per tick instead would make the bar a count of how often
+   * this page was allowed to run, which is not the same thing: a hidden tab
+   * gets its one-second timer about once a minute, so a listener who switched
+   * away for a song and came back would find the bar minutes behind the music
+   * and creeping, with nothing on the page to say why. */
+  function paintProgress() {
+    var body = playerBody();
+    if (!body) return;
+
+    var duration = Number(body.getAttribute('data-duration')) || 0;
+    if (duration <= 0) return;
+
+    var since = (window.performance.now() - positionAt) / 1000;
+    var position = Math.min(duration, (Number(body.getAttribute('data-position')) || 0) + since);
+
+    var bar = body.querySelector('.player-progress span');
+    if (bar) bar.style.width = (position / duration) * 100 + '%';
+
+    var label = body.querySelector('#positionLabel');
+    if (label) label.textContent = formatDuration(position);
+  }
+
+  /* Both of the page's clocks come through here — a swapped fragment and a
+   * position event — so there is one place that records what the server said
+   * and when, and one place that paints. Called with nothing, it re-reads
+   * whatever the fragment just rendered.
+   *
+   * The paint matters as much as the number: a socket update that only wrote
+   * the attribute would not show until the next tick, which in a throttled tab
+   * is the next minute. */
+  function markPosition(seconds) {
+    var body = playerBody();
+    if (!body) return;
+    if (typeof seconds === 'number') body.setAttribute('data-position', String(seconds));
+    positionAt = window.performance.now();
+    paintProgress();
+  }
+
   function startTicker() {
     if (ticker !== null) window.clearInterval(ticker);
-    ticker = window.setInterval(function () {
-      var body = document.querySelector('#nowPlaying .player-body[data-duration]');
-      if (!body) return;
-
-      var duration = Number(body.getAttribute('data-duration')) || 0;
-      var position = Number(body.getAttribute('data-position')) || 0;
-      if (duration <= 0) return;
-
-      position = Math.min(duration, position + 1);
-      body.setAttribute('data-position', String(position));
-
-      var bar = body.querySelector('.player-progress span');
-      if (bar) bar.style.width = Math.min(100, (position / duration) * 100) + '%';
-
-      var label = body.querySelector('#positionLabel');
-      if (label) label.textContent = formatDuration(position);
-    }, 1000);
+    ticker = window.setInterval(paintProgress, 1000);
   }
 
   // -- Chat ----------------------------------------------------------------
@@ -792,12 +823,7 @@
 
   // -- Queue ---------------------------------------------------------------
   function wireQueueActions(token) {
-    var container = document.getElementById('queue');
-    if (!container) return;
-
-    // One delegated listener: the queue is replaced wholesale on every update,
-    // so per-button handlers would have to be re-attached every time.
-    container.addEventListener('click', function (event) {
+    function act(event) {
       var button = event.target.closest('button[data-action]');
       if (!button) return;
 
@@ -819,14 +845,34 @@
         request = api('/rooms/' + token + '/tracks/' + trackId + '/promote', {
           method: 'POST', token: token
         });
+      } else if (action === 'requeue') {
+        /* A history row carries the video, not the played entry, so this is the
+         * same submission the add box makes — one endpoint, one set of rules.
+         * The duplicate check is what makes it once-until-played on the server
+         * too, whatever the row happened to be showing. */
+        request = api('/rooms/' + token + '/tracks', {
+          method: 'POST', body: { url: button.getAttribute('data-youtube') }, token: token
+        });
       } else {
         button.disabled = false;
         return;
       }
 
-      request.then(function () { return refresh(token); })
+      request.then(function (payload) {
+        // The history is often far from the queue on a phone; say it landed.
+        if (action === 'requeue' && payload) toast('Queued “' + payload.title + '”', 'success');
+        return refresh(token);
+      })
         .catch(function (error) { toast(error.message || 'That did not work', 'danger'); })
         .finally(function () { button.disabled = false; });
+    }
+
+    // One delegated listener per region: the queue and the history are both
+    // replaced wholesale on every update, so per-button handlers would have to
+    // be re-attached every time.
+    ['queue', 'history'].forEach(function (id) {
+      var container = document.getElementById(id);
+      if (container) container.addEventListener('click', act);
     });
   }
 
@@ -1286,6 +1332,10 @@
       if (source && regions[name]) regions[name].innerHTML = source.innerHTML;
     });
 
+    // The fragment carries a position measured when the server rendered it, so
+    // the local clock starts again from here rather than from the last event.
+    markPosition();
+
     var meta = holder.querySelector('[data-region="meta"]');
     if (meta) {
       var listeners = meta.getAttribute('data-listeners');
@@ -1379,9 +1429,13 @@
         }
 
         if (event.type === 'PLAYBACK_POSITION') {
-          var body = document.querySelector('#nowPlaying .player-body[data-duration]');
-          if (body && typeof event.data.position_s === 'number') {
-            body.setAttribute('data-position', String(event.data.position_s));
+          /* Only for what is on screen. The last report of a track can arrive
+           * after the next one has started, and a bar that jumps to two minutes
+           * in on a song that just began is worse than one that waits. */
+          var body = playerBody();
+          if (body && typeof event.data.position_s === 'number'
+              && body.getAttribute('data-entry') === String(event.data.track_id)) {
+            markPosition(event.data.position_s);
           }
           return;
         }

@@ -7,7 +7,10 @@
     <div class="player-art player-art-placeholder"><i class="bi bi-music-note-beamed"></i></div>
     {% endif %}
 
-    <div class="player-body" data-position="{{ now_playing.position_s }}" data-duration="{{ track.duration_s }}"
+    {# data-entry is what a PLAYBACK_POSITION event is matched against, so a
+       report for the track that just ended cannot move this one's bar. #}
+    <div class="player-body" data-entry="{{ track.id }}"
+         data-position="{{ now_playing.position_s }}" data-duration="{{ track.duration_s }}"
          data-title="{{ track.title }}" data-channel="{{ track.channel or '' }}"
          data-art="{{ track.thumbnail_url or '' }}">
         <div class="player-title">
@@ -36,7 +39,9 @@
         <i class="bi bi-broadcast-pin"></i>
     </div>
 
-    <div class="player-body" data-position="{{ now_playing.position_s }}"
+    {# "news" is what the worker calls a bulletin in its position reports; a
+       track id is a UUID and can never collide with it (app/news.py). #}
+    <div class="player-body" data-entry="news" data-position="{{ now_playing.position_s }}"
          data-duration="{{ bulletin.duration_s }}" data-title="{{ bulletin.title }}"
          data-channel="{{ bulletin.source }}" data-art="">
         <div class="player-title">{{ bulletin.title }}</div>

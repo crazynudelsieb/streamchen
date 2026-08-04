@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from app.config import Settings
+from app.models import STATE_PLAYED, STATE_PLAYING, Track, utcnow
 from app.web import format_ago, format_duration, format_score
 from tests.conftest import video_id, watch_url
 
@@ -164,6 +167,98 @@ async def test_queued_songs_appear_in_the_page(client, room):
 
 async def test_an_empty_queue_says_so(client, room):
     assert "Nothing queued" in (await client.get(f"/r/{room['token']}")).text
+
+
+# --- Recently played --------------------------------------------------------
+async def _set_state(api, track_id: str, state: str) -> None:
+    """Move a track along its lifecycle the way the worker would, without one."""
+    async with api.state.sessionmaker() as db:
+        track = await db.get(Track, uuid.UUID(track_id))
+        track.state = state
+        if state == STATE_PLAYING:
+            track.started_at = utcnow()
+        else:
+            track.ended_at = utcnow()
+        await db.commit()
+
+
+async def _play(api, client, room, seed: int) -> dict:
+    """Queue a song and let it finish, so it is in the history."""
+    track = (
+        await client.post(f"/api/rooms/{room['token']}/tracks", json={"url": watch_url(seed)})
+    ).json()
+    await _set_state(api, track["id"], STATE_PLAYED)
+    return track
+
+
+async def test_a_played_song_can_be_queued_again_from_the_history(api, client, room):
+    await _play(api, client, room, 31)
+
+    page = await client.get(f"/r/{room['token']}")
+
+    assert 'data-action="requeue"' in page.text
+    assert f'data-youtube="{video_id(31)}"' in page.text
+
+
+async def test_the_history_offers_a_song_back_once_until_it_has_played_again(api, client, room):
+    """The whole rule. Re-adding is what takes the offer away, and only the song
+    playing again brings it back — otherwise this would be a loop button."""
+    await _play(api, client, room, 32)
+
+    again = await client.post(
+        f"/api/rooms/{room['token']}/tracks", json={"url": video_id(32)}
+    )
+    assert again.status_code == 201
+
+    waiting = await client.get(f"/r/{room['token']}/live")
+    assert 'data-action="requeue"' not in waiting.text
+    assert '<span class="badge-soft">queued</span>' in waiting.text
+
+    await _set_state(api, again.json()["id"], STATE_PLAYED)
+
+    # Both history rows are the same song, and it is queueable again from either.
+    played = await client.get(f"/r/{room['token']}/live")
+    assert played.text.count('data-action="requeue"') == 2
+
+
+async def test_a_song_back_on_air_says_so_rather_than_offering_itself(api, client, room):
+    await _play(api, client, room, 33)
+    again = await client.post(
+        f"/api/rooms/{room['token']}/tracks", json={"url": video_id(33)}
+    )
+    await _set_state(api, again.json()["id"], STATE_PLAYING)
+
+    fragment = await client.get(f"/r/{room['token']}/live")
+
+    assert '<span class="badge-soft">on air</span>' in fragment.text
+    assert 'data-action="requeue"' not in fragment.text
+
+
+async def test_the_player_names_the_entry_its_progress_belongs_to(api, client, room):
+    """A PLAYBACK_POSITION event says which entry it measured, and the page
+    matches it against this before moving the bar -- the last report of a track
+    can arrive after the next one is already on screen."""
+    track = (
+        await client.post(f"/api/rooms/{room['token']}/tracks", json={"url": watch_url(35)})
+    ).json()
+    await _set_state(api, track["id"], STATE_PLAYING)
+
+    fragment = await client.get(f"/r/{room['token']}/live")
+
+    assert f'data-entry="{track["id"]}"' in fragment.text
+
+
+async def test_a_locked_queue_reaches_the_history_button(api, new_client, client, room):
+    """The offer is the add box in another shape, so it is closed by the same
+    things — with the reason on it rather than a failure after the press."""
+    await _play(api, client, room, 34)
+    await client.patch(f"/api/rooms/{room['token']}", json={"queue_locked": True})
+
+    guest = await new_client()
+    fragment = await guest.get(f"/r/{room['token']}/live")
+
+    assert 'data-action="requeue"' in fragment.text
+    assert 'title="The host locked the queue."' in fragment.text
 
 
 async def test_the_host_key_is_shown_once_and_only_when_handed_over(client, room):
