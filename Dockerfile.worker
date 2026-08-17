@@ -3,7 +3,7 @@
 # A separate image because ffmpeg and its codecs roughly double the size, and
 # the API has no use for them.
 
-FROM python:3.14.6-slim AS builder
+FROM python:3.14.7-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -24,7 +24,7 @@ COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-FROM python:3.14.6-slim AS production
+FROM python:3.14.7-slim AS production
 
 LABEL org.opencontainers.image.title="streamchen-worker"
 LABEL org.opencontainers.image.description="streamchen playback worker (yt-dlp -> ffmpeg -> Icecast)"
