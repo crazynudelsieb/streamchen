@@ -17,7 +17,7 @@ argon2-cffi>=25.1.0,<26.0
 # The resolver for YouTube metadata and audio. Pinned loosely on purpose:
 # extraction breaks whenever YouTube changes, and the fix is always a newer
 # yt-dlp. ffmpeg is a system package, installed in the worker image.
-yt-dlp>=2026.7.4
+yt-dlp>=2026.8.19
 
 # --- Templates ---
 # Server-rendered pages; the frontend owns no state, so there is nothing for a
