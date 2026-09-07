@@ -3,7 +3,7 @@
 # --- API ---
 fastapi>=0.141.1,<1.0
 uvicorn[standard]>=0.52.0,<1.0
-pydantic>=2.13.4,<3.0
+pydantic>=2.13.5,<3.0
 
 # --- Storage ---
 SQLAlchemy[asyncio]>=2.0.51,<3.0
